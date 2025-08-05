@@ -2,6 +2,7 @@ package main
 
 import (
 	binreader "decoder/binReader"
+	"decoder/huffman"
 	"fmt"
 	"log"
 )
@@ -23,6 +24,9 @@ const (
 	APP0  uint16 = 0xFFE0
 	APP15 uint16 = 0xFFEF
 	DQT   uint16 = 0xFFDB
+	DHT   uint16 = 0xFFC4
+	SOS   uint16 = 0xFFDA
+	DRI   uint16 = 0xFFDD
 )
 
 const numOfTables = 4  //Максимальное количество таблиц
@@ -30,16 +34,23 @@ const maxComps = 3     //Максимальное количество комп�
 const colCount = 8     //Количество столбцов
 const sizeOfTable = 64 //Количество элементов в одной таблице
 
-var withDump bool = false           //Флаг вывода информации заголовков в лог
-var reader *binreader.BinReader     //Объект для чтения файла
-var quantTables [numOfTables][]byte //Массив с таблицами квантования
-var samplePrecision byte            //Глубина цвета
-var imageWidth uint16               //Ширина изображения
-var imageHeight uint16              //Высота изображения
-var maxH byte                       //Максимальный Н фактор
-var maxV byte                       //Максимальный V фактор
-var numOfComps byte                 //Количество цветовых компонет в изображении
-var comps [maxComps]component       //Массив с данными о компонентах
+var withDump bool = false                    //Флаг вывода информации заголовков в лог
+var reader *binreader.BinReader              //Объект для чтения файла
+var quantTables [numOfTables][]byte          //Массив с таблицами квантования
+var acTables [numOfTables]*huffman.HuffTable //Массив с AC таблицами Хаффмана
+var dcTables [numOfTables]*huffman.HuffTable //Массив с DC таблицами Хаффмана
+var samplePrecision byte                     //Глубина цвета
+var imageWidth uint16                        //Ширина изображения
+var imageHeight uint16                       //Высота изображения
+var maxH byte                                //Максимальный Н фактор
+var maxV byte                                //Максимальный V фактор
+var numOfComps byte                          //Количество цветовых компонет в изображении
+var comps [maxComps]component                //Массив с данными о компонентах
+var restartInterval uint16                   //Интервал перезапуска дельта кодирования
+var startSpectral byte
+var endSpectral byte
+var ah byte
+var al byte
 
 // Вывод компоненты в лог
 func printComponent(c component) {
@@ -71,6 +82,7 @@ func readMarker(marker uint16) bool {
 func readApp() {
 	ln := reader.GetWord()
 	temp := reader.GetArray(ln - 2)
+
 	if withDump {
 		log.Println("APP", string(temp))
 	}
@@ -81,11 +93,12 @@ func readQuantTable() {
 	reader.GetWord()
 	for reader.GetNextByte() != 0xFF {
 		tq := reader.GetByte()
-		if tq > 3 {
+		if tq > numOfTables-1 {
 			log.Fatal("readQuantTable -> invalid table destination", tq)
 		}
 		table := reader.GetArray(sizeOfTable)
 		quantTables[tq] = table
+
 		if withDump {
 			log.Printf("Quant table destination: %d\n", tq)
 			printTable(quantTables[tq])
@@ -93,7 +106,60 @@ func readQuantTable() {
 	}
 }
 
-// Чтение сегмента таблиц
+// Чтение и конструирование таблиц Хаффмана
+func readHuffTable() {
+	reader.GetWord()
+	tc, th := reader.Get4Bit()
+	if th > numOfTables-1 {
+		log.Fatal("readHuffTable -> invalid table destination", th)
+	}
+	offset := make([]byte, huffman.NumHuffCodesLen+1)
+	var sumElem byte //Количество символов
+	for i := 1; i < huffman.NumHuffCodesLen+1; i++ {
+		sumElem += reader.GetByte()
+		offset[i] = sumElem
+	}
+	symbols := make([]byte, sumElem)
+	for i := range sumElem {
+		symbols[i] = reader.GetByte()
+	}
+	huff, err := huffman.MakeHuffTable(offset, symbols)
+	if err != nil {
+		log.Println("MakeHuffTable -> error")
+		log.Fatal(err.Error())
+	}
+	if tc == 0 {
+		dcTables[th] = huff
+	} else if tc == 1 {
+		acTables[th] = huff
+	} else {
+		log.Fatal("readHuffTable -> invalid table ID")
+	}
+
+	if withDump {
+		temp := "DHT "
+		if tc == 0 {
+			temp += fmt.Sprintf("DC-table %d\n", th)
+		} else {
+			temp += fmt.Sprintf("AC-table %d\n", th)
+		}
+		log.Print(temp)
+		huffman.PrintHuffTable(huff)
+	}
+
+}
+
+// Чтение сегмента с перезапуском дельта-кодирования
+func readRestartInterval() {
+	reader.GetWord()
+	restartInterval = reader.GetWord()
+
+	if withDump {
+		log.Print("DRI restart interval: ", restartInterval)
+	}
+}
+
+// Чтение сегмента таблиц, возвращает следующие за сегментами 2 байта
 func readTables() uint16 {
 	marker := reader.GetWord()
 	isContinue := false
@@ -103,11 +169,42 @@ func readTables() uint16 {
 	} else if marker == DQT {
 		readQuantTable()
 		isContinue = true
+	} else if marker == DHT {
+		readHuffTable()
+		isContinue = true
+	} else if marker == DRI {
+		readRestartInterval()
+		isContinue = true
 	}
 	if isContinue {
 		marker = readTables()
 	}
 	return marker
+}
+
+// Чтение заголовка кадра
+func readScanHeader() {
+	reader.GetWord()
+	ns := reader.GetByte()
+	for range ns {
+		cs := reader.GetByte()
+		td, ta := reader.Get4Bit()
+		comps[cs-1].dcTableID = td
+		comps[cs-1].acTableID = ta
+	}
+	startSpectral = reader.GetByte()
+	endSpectral = reader.GetByte()
+	ah, al = reader.Get4Bit()
+
+	if withDump {
+		log.Print("SOS")
+		for i, temp := range comps {
+			log.Printf("component %d:\tDC: %d\tAC: %d\n", i+1, temp.dcTableID, temp.acTableID)
+		}
+		log.Print("start Spectral Selection: ", startSpectral)
+		log.Print("end Spectral Selection: ", endSpectral)
+		log.Print("approximation high: ", ah, "; approximation low: ", al)
+	}
 }
 
 // Чтение заголовка фрейма
@@ -129,6 +226,7 @@ func readFrameHeader() {
 		tq := reader.GetByte()
 		comps[c-1] = component{h: h, v: v, quantTableID: tq}
 	}
+
 	if withDump {
 		log.Printf("sample Precision: %d\n", samplePrecision)
 		log.Printf("image Width: %d\n", imageWidth)
@@ -141,6 +239,15 @@ func readFrameHeader() {
 	}
 }
 
+// Чтение скана
+func readScan() {
+	nextMarker := readTables()
+	if nextMarker != SOS {
+		log.Fatalf("readFrame can't read SOS\nMarker: %x", nextMarker)
+	}
+	readScanHeader()
+}
+
 // Чтение кадра
 func readFrame() {
 	nextMarker := readTables()
@@ -148,7 +255,7 @@ func readFrame() {
 		log.Fatalf("readFrame can't read SOF0\nMarker: %x", nextMarker)
 	}
 	readFrameHeader()
-	// img := readScan()
+	readScan()
 }
 
 // Чтение JPEG файла по пути source
