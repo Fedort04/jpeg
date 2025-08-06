@@ -110,11 +110,11 @@ func (b *BinReader) GetBit() byte {
 }
 
 // Чтение n бит
-func (b *BinReader) GetBits(n byte) byte {
-	var ans byte
+func (b *BinReader) GetBits(n byte) uint16 {
+	var ans uint16
 	for range n {
 		ans = ans << 1
-		ans += b.GetBit()
+		ans += uint16(b.GetBit())
 	}
 	return ans
 }

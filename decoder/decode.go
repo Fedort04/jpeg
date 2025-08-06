@@ -63,6 +63,18 @@ func printUnit(table []int16) {
 
 	}
 	fmt.Printf("\n\n")
+	// log.Fatal()
+}
+
+func printCos(table [][]byte) {
+	for i := 0; i < 8; i++ {
+		for j := 0; j < 8; j++ {
+			fmt.Printf("%d\t", table[i][j])
+		}
+		fmt.Printf("\n")
+
+	}
+	fmt.Printf("\n\n")
 }
 
 // Инициализация декодирования, вычисление вспомогательных переменных
@@ -82,8 +94,8 @@ func restart() {
 }
 
 // Декодирование знака в потоке Хаффмана
-func decodeSign(num byte, len byte) int16 {
-	if num >= (1<<len - 1) {
+func decodeSign(num int16, len byte) int16 {
+	if num >= (1 << (len - 1)) {
 		return int16(num)
 	} else {
 		return int16(num - (1 << len) + 1)
@@ -93,7 +105,7 @@ func decodeSign(num byte, len byte) int16 {
 // Декодирование DC элемента
 func decodeDC(id byte, huff *huffman.HuffTable) int16 {
 	temp := huff.DecodeHuff(reader)
-	diff := decodeSign(reader.GetBits(byte(temp)), byte(temp))
+	diff := decodeSign(int16(reader.GetBits(byte(temp))), byte(temp))
 	res := diff + prev[id]
 	prev[id] = res
 	return res
@@ -121,7 +133,7 @@ func decodeAC(unit []int16, huff *huffman.HuffTable) {
 			log.Fatalf("decodeAC -> error: k(%d) bigger than unit length", k)
 		}
 		bits := reader.GetBits(small)
-		unit[k] = decodeSign(bits, small)
+		unit[k] = decodeSign(int16(bits), small)
 		k++
 	}
 }
@@ -204,11 +216,14 @@ func decodeDataUnit(elemID byte) [][]byte {
 	temp := make([]int16, dataUnitRowCount*dataUnitColCount)
 	temp[0] = decodeDC(elemID, dcTables[comps[elemID].dcTableID])
 	decodeAC(temp, acTables[comps[elemID].acTableID])
-	printUnit(temp)
 	dequant(temp, quantTables[comps[elemID].quantTableID])
+	printUnit(temp)
 	matrix := zigZag(temp)
-	log.Fatal()
-	return inverseCosin(matrix)
+	// log.Fatal()
+	t := inverseCosin(matrix)
+	// printCos(t)
+
+	return t
 }
 
 // Перевод изображения в RGB
@@ -219,14 +234,23 @@ func toRGB(img [][]yCbCr) [][]rgb {
 	}
 	for i := range mcuHeight {
 		for j := range mcuWidth {
+			// fmt.Printf("y=%d\n", img[i][j].y)
 			img[i][j].y += 128
+			// fmt.Printf("y=%d\n", img[i][j].y)
 			img[i][j].cb += 128
 			img[i][j].cr += 128
-			res[i][j].r = Clamp255(int(math.Round(float64(img[i][j].y) + 1.402*float64((img[i][j].cr-128)))))
-			res[i][j].g = Clamp255(int(math.Round(float64(img[i][j].y) - 0.34414*float64((img[i][j].cb-128)) - 0.71414*float64((img[i][j].cr-128)))))
-			res[i][j].b = Clamp255(int(math.Round(float64(img[i][j].y) + 1.772*float64((img[i][j].cb-128)))))
+			res[i][j].r = Clamp255(int(math.Round(float64(img[i][j].y) + 1.402*float64((float64(img[i][j].cr)-128)))))
+			res[i][j].g = Clamp255(int(math.Round(float64(img[i][j].y) - 0.34414*float64((float64(img[i][j].cb)-128)) - 0.71414*float64((float64(img[i][j].cr)-128)))))
+			res[i][j].b = Clamp255(int(math.Round(float64(img[i][j].y) + 1.772*float64((float64(img[i][j].cb)-128)))))
+
+			// fmt.Printf("x%x%x%x ", res[i][j].r, res[i][j].g, res[i][j].b)
+			// if j == 15 {
+			// 	fmt.Printf("\n")
+			// }
 		}
 	}
+	// log.Fatal()
+
 	return res
 }
 
