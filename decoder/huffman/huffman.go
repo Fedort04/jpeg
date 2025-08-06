@@ -20,14 +20,16 @@ type HuffTable struct {
 // Декодирование из битового потока значений Хаффмана с помощью binReader
 func (h *HuffTable) DecodeHuff(reader *binreader.BinReader) uint16 {
 	var code uint16
-	var codeLen byte
+	codeLen := 0
 	counter := 0
 	for counter < 100 {
 		code = code << 1
 		code += uint16(reader.GetBit())
 		codeLen++
+		// fmt.Printf("%x\t", code)
 		for i := h.offset[codeLen-1]; i < h.offset[codeLen]; i++ {
-			if h.codes[i] == code {
+			temp := h.codes[i]
+			if code == temp {
 				return uint16(h.symbols[i])
 			}
 		}
@@ -49,7 +51,7 @@ func MakeHuffTable(offset []byte, symbols []byte) (*HuffTable, error) {
 	var code uint16
 	for i := range NumHuffCodesLen {
 		for j := ans.offset[i]; j < ans.offset[i+1]; j++ {
-			ans.codes[i] = code
+			ans.codes[j] = code
 			code++
 		}
 		code = code << 1

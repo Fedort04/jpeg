@@ -2,6 +2,7 @@ package main
 
 import (
 	binreader "decoder/binReader"
+	binwriter "decoder/binWriter"
 	"decoder/huffman"
 	"fmt"
 	"log"
@@ -27,6 +28,8 @@ const (
 	DHT   uint16 = 0xFFC4
 	SOS   uint16 = 0xFFDA
 	DRI   uint16 = 0xFFDD
+	RST0  uint16 = 0xFFD0
+	RST7  uint16 = 0xFFD7
 )
 
 const numOfTables = 4  //Максимальное количество таблиц
@@ -144,7 +147,6 @@ func readHuffTable() {
 			temp += fmt.Sprintf("AC-table %d\n", th)
 		}
 		log.Print(temp)
-		huffman.PrintHuffTable(huff)
 	}
 
 }
@@ -240,26 +242,32 @@ func readFrameHeader() {
 }
 
 // Чтение скана
-func readScan() {
+func readScan() [][]rgb {
 	nextMarker := readTables()
 	if nextMarker != SOS {
 		log.Fatalf("readFrame can't read SOS\nMarker: %x", nextMarker)
 	}
 	readScanHeader()
+	return decodeScan()
 }
 
 // Чтение кадра
-func readFrame() {
+func readFrame() [][]rgb {
 	nextMarker := readTables()
 	if nextMarker != SOF0 {
 		log.Fatalf("readFrame can't read SOF0\nMarker: %x", nextMarker)
 	}
 	readFrameHeader()
-	readScan()
+	res := readScan()
+
+	if withDump {
+		log.Print("Scan was readed")
+	}
+	return res
 }
 
 // Чтение JPEG файла по пути source
-func ReadJPEG(source string, dump bool) {
+func ReadJPEG(source string, dump bool) [][]rgb {
 	withDump = dump
 	var err error
 	reader, err = binreader.BinReaderInit(source, binreader.BIG)
@@ -271,17 +279,62 @@ func ReadJPEG(source string, dump bool) {
 	if !readMarker(SOI) {
 		log.Fatal("Can't read SOI marker")
 	}
+
 	if withDump {
 		log.Println("SOI")
 	}
 
-	readFrame()
+	res := readFrame()
 
 	if !readMarker(EOI) {
 		log.Fatal("Can't read EOI marker")
 	}
+
+	if withDump {
+		log.Print("EOI")
+	}
+
+	return res
+}
+
+// Кодирование в BMP для наглядности
+func encodeBMP(img [][]rgb, fileName string) {
+	err := binwriter.BinwriterInit(fileName)
+	if err != nil {
+		log.Panic(err.Error())
+	}
+	height := imageHeight
+	width := imageWidth
+	paddingSize := width % 4
+	size := 14 + 12 + height*width*3 + paddingSize*height
+	binwriter.PutChar('B')
+	binwriter.PutChar('M')
+	binwriter.PutInt(uint(size))
+	binwriter.PutInt(0)
+	binwriter.PutInt(0x1A)
+	binwriter.PutInt(12)
+	binwriter.PutShort(uint(width))
+	binwriter.PutShort(uint(height))
+	binwriter.PutShort(1)
+	binwriter.PutShort(24)
+
+	for i := int(height - 1); i >= 0; i-- {
+		for j := 0; j < int(width); j++ {
+			binwriter.PutChar(img[i][j].b)
+			binwriter.PutChar(img[i][j].g)
+			binwriter.PutChar(img[i][j].r)
+		}
+		for range paddingSize {
+			binwriter.PutChar(0)
+		}
+	}
+	err = binwriter.Close()
+	if err != nil {
+		log.Panic(err.Error())
+	}
 }
 
 func main() {
-	ReadJPEG("pics/Aqours.jpg", true)
+	img := ReadJPEG("pics/Aqours.jpg", true)
+	encodeBMP(img, "pics/Aqours.bmp")
 }

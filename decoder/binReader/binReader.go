@@ -17,8 +17,9 @@ const (
 type BinReader struct {
 	src      *bufio.Reader //Источник для чтения
 	end      Endian        //Endianness
-	curByte  byte          //Текущее значение байта для побитового чтения
-	bitCount byte          //Счетчик бит в текущем байте
+	prevByte byte
+	curByte  byte //Текущее значение байта для побитового чтения
+	bitCount byte //Счетчик бит в текущем байте
 }
 
 // Инициализация объекта BinReader на расположение source
@@ -29,6 +30,7 @@ func BinReaderInit(source string, end Endian) (*BinReader, error) {
 		return nil, err
 	}
 	reader.src = bufio.NewReader(temp)
+	reader.prevByte = 0
 	reader.end = end
 	return &reader, nil
 }
@@ -85,8 +87,13 @@ func (b *BinReader) Get4Bit() (byte, byte) {
 func (b *BinReader) GetBit() byte {
 	if b.end == BIG {
 		if b.bitCount == 0 {
+			b.prevByte = b.curByte
 			b.curByte = b.GetByte()
 			b.bitCount = 8
+		}
+		if b.prevByte == 0xFF && b.curByte == 0x00 {
+			b.prevByte = 0
+			b.curByte = b.GetByte()
 		}
 		b.bitCount--
 		temp := b.curByte >> b.bitCount
@@ -114,6 +121,7 @@ func (b *BinReader) GetBits(n byte) byte {
 
 // Пропуск оставшихся бит в байте
 func (b *BinReader) BitsAlign() {
+	b.prevByte = b.curByte
 	b.curByte = b.GetByte()
 	if b.end == BIG {
 		b.bitCount = 8

@@ -2,9 +2,34 @@ package main
 
 import (
 	"decoder/huffman"
+	"fmt"
 	"log"
 	"math"
 )
+
+// Последовательность зиг-зага
+var zigZagTable [64]byte = [64]byte{
+	0, 1, 5, 6, 14, 15, 27, 28,
+	2, 4, 7, 13, 16, 26, 29, 42,
+	3, 8, 12, 17, 25, 30, 41, 43,
+	9, 11, 18, 24, 31, 40, 44, 53,
+	10, 19, 23, 32, 39, 45, 52, 54,
+	20, 22, 33, 38, 46, 51, 55, 60,
+	21, 34, 37, 47, 50, 56, 59, 61,
+	35, 36, 48, 49, 57, 58, 62, 63,
+}
+
+// Таблица с коэффициентами в ОДКП
+var idctTable [64]float64 = [64]float64{
+	0.707107, 0.707107, 0.707107, 0.707107, 0.707107, 0.707107, 0.707107, 0.707107,
+	0.980785, 0.831470, 0.555570, 0.195090, -0.195090, -0.555570, -0.831470, -0.980785,
+	0.923880, 0.382683, -0.382683, -0.923880, -0.923880, -0.382683, 0.382683, 0.923880,
+	0.831470, -0.195090, -0.980785, -0.555570, 0.555570, 0.980785, 0.195090, -0.831470,
+	0.707107, -0.707107, -0.707107, 0.707107, 0.707107, -0.707107, -0.707107, 0.707107,
+	0.555570, -0.980785, 0.195090, 0.831470, -0.831470, -0.195090, 0.980785, -0.555570,
+	0.382683, -0.923880, 0.923880, -0.382683, -0.382683, 0.923880, -0.923880, 0.382683,
+	0.195090, -0.555570, 0.831470, -0.980785, 0.980785, -0.831470, 0.555570, -0.195090,
+}
 
 // Структура для хранения данных в YCbCr формате
 type yCbCr struct {
@@ -29,6 +54,17 @@ var mcuHeight uint16      //Высота MCU
 var dataUnitByComp []byte //Количество блоков для каждой компоненты
 // var sumUnits byte
 
+func printUnit(table []int16) {
+	for i := 0; i < 8; i++ {
+		for j := 0; j < 8; j++ {
+			fmt.Printf("%d\t", table[i*8+j])
+		}
+		fmt.Printf("\n")
+
+	}
+	fmt.Printf("\n\n")
+}
+
 // Инициализация декодирования, вычисление вспомогательных переменных
 func decodeInit() {
 	prev = make([]int16, numOfComps)
@@ -38,6 +74,11 @@ func decodeInit() {
 	}
 	mcuHeight = uint16(dataUnitRowCount * maxV)
 	mcuWidth = uint16(dataUnitColCount * maxH)
+}
+
+// Сброс дельта-кодирования
+func restart() {
+	prev = make([]int16, numOfComps)
 }
 
 // Декодирование знака в потоке Хаффмана
@@ -94,7 +135,35 @@ func dequant(unit []int16, table []byte) {
 
 // Зиг-заг преобразование
 func zigZag(unit []int16) [][]int16 {
+	//Создание матрицы
+	res := make([][]int16, dataUnitRowCount)
+	for i := range dataUnitRowCount {
+		res[i] = make([]int16, dataUnitColCount)
+		for j := range dataUnitColCount {
+			res[i][j] = unit[zigZagTable[i*dataUnitRowCount+j]]
+		}
+	}
+	return res
+}
 
+// Обратное дискретно-косинусное преобразование
+func inverseCosin(unit [][]int16) [][]byte {
+	res := make([][]byte, dataUnitRowCount)
+	for i := range dataUnitRowCount {
+		res[i] = make([]byte, dataUnitColCount)
+	}
+	for x := range dataUnitRowCount {
+		for y := range dataUnitColCount {
+			sum := 0.0
+			for u := range dataUnitRowCount {
+				for v := range dataUnitColCount {
+					sum += float64(unit[u][v]) * idctTable[u*8+x] * idctTable[v*8+y]
+				}
+			}
+			res[x][y] = byte(0.25 * sum)
+		}
+	}
+	return res
 }
 
 // Создание пустого изображения YCbCr
@@ -111,7 +180,7 @@ func createEmptyImage() [][]rgb {
 // Переписать как чистую
 func createEmptyMCU() [][]yCbCr {
 	img := make([][]yCbCr, mcuHeight)
-	for i := range imageWidth {
+	for i := range mcuWidth {
 		img[i] = make([]yCbCr, mcuWidth)
 	}
 	return img
@@ -135,9 +204,11 @@ func decodeDataUnit(elemID byte) [][]byte {
 	temp := make([]int16, dataUnitRowCount*dataUnitColCount)
 	temp[0] = decodeDC(elemID, dcTables[comps[elemID].dcTableID])
 	decodeAC(temp, acTables[comps[elemID].acTableID])
+	printUnit(temp)
 	dequant(temp, quantTables[comps[elemID].quantTableID])
 	matrix := zigZag(temp)
-	inverseCosin()
+	log.Fatal()
+	return inverseCosin(matrix)
 }
 
 // Перевод изображения в RGB
@@ -201,8 +272,21 @@ func decodeMCU() [][]yCbCr {
 	return img
 }
 
+// Выполнение рестарта дельта кодирвоания
+func makeRestart() bool {
+	marker := reader.GetWord()
+	reader.BitsAlign()
+	if marker == EOI {
+		return true
+	} else if marker >= RST0 && marker <= RST7 {
+		restart()
+		return true
+	}
+	return false
+}
+
 // Декодирование скана
-func decodeScan() {
+func decodeScan() [][]rgb {
 	decodeInit()
 	img := createEmptyImage()
 	var mcuCount uint //Общее количество прочитанных mcu
@@ -221,6 +305,10 @@ func decodeScan() {
 				}
 				mcuCount++
 			}
+			if mcuCount%uint(restartInterval) == 0 && !makeRestart() {
+				log.Fatal("makeRestart wrong marker")
+			}
 		}
 	}
+	return img
 }
