@@ -56,6 +56,7 @@ func (b *BinReader) GetByte() byte {
 
 // Чтение двух байт
 func (b *BinReader) GetWord() uint16 {
+
 	ans := uint16(b.GetByte())
 	if b.end == BIG {
 		ans = ans << 8
@@ -91,6 +92,7 @@ func (b *BinReader) GetBit() byte {
 			b.curByte = b.GetByte()
 			b.bitCount = 8
 		}
+		//Если предыдущий байт был 0xFF, а текущий 0x00, то пропускаем нули
 		if b.prevByte == 0xFF && b.curByte == 0x00 {
 			b.prevByte = 0
 			b.curByte = b.GetByte()
