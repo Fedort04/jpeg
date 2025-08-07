@@ -54,6 +54,7 @@ var mcuHeight uint16      //Высота MCU
 var dataUnitByComp []byte //Количество блоков для каждой компоненты
 // var sumUnits byte
 
+// Использовалась при отладке для печати data unit
 func printUnit(table []int16) {
 	for i := 0; i < 8; i++ {
 		for j := 0; j < 8; j++ {
@@ -66,6 +67,7 @@ func printUnit(table []int16) {
 	// log.Fatal()
 }
 
+// Использовалась при отладке для печати результата ОДКП
 func printCos(table [][]byte) {
 	for i := 0; i < 8; i++ {
 		for j := 0; j < 8; j++ {
@@ -75,6 +77,24 @@ func printCos(table [][]byte) {
 
 	}
 	fmt.Printf("\n\n")
+}
+
+// Создание пустого изображения YCbCr
+func createEmptyImage(height uint16, width uint16) [][]rgb {
+	img := make([][]rgb, height)
+	for i := range height {
+		img[i] = make([]rgb, width)
+	}
+	return img
+}
+
+// Создание пустого MCU
+func createEmptyMCU(height uint16, width uint16) [][]yCbCr {
+	img := make([][]yCbCr, height)
+	for i := range height {
+		img[i] = make([]yCbCr, width)
+	}
+	return img
 }
 
 // Инициализация декодирования, вычисление вспомогательных переменных
@@ -178,26 +198,6 @@ func inverseCosin(unit [][]int16) [][]byte {
 	return res
 }
 
-// Создание пустого изображения YCbCr
-// Переписать как чистую
-func createEmptyImage() [][]rgb {
-	img := make([][]rgb, imageHeight)
-	for i := range imageHeight {
-		img[i] = make([]rgb, imageWidth)
-	}
-	return img
-}
-
-// Создание пустого MCU
-// Переписать как чистую
-func createEmptyMCU() [][]yCbCr {
-	img := make([][]yCbCr, mcuHeight)
-	for i := range mcuWidth {
-		img[i] = make([]yCbCr, mcuWidth)
-	}
-	return img
-}
-
 // Проверка в диапазоне 0-255
 func Clamp255(val int) byte {
 	min := 0
@@ -217,9 +217,8 @@ func decodeDataUnit(elemID byte) [][]byte {
 	temp[0] = decodeDC(elemID, dcTables[comps[elemID].dcTableID])
 	decodeAC(temp, acTables[comps[elemID].acTableID])
 	dequant(temp, quantTables[comps[elemID].quantTableID])
-	printUnit(temp)
+	// printUnit(temp)
 	matrix := zigZag(temp)
-	// log.Fatal()
 	t := inverseCosin(matrix)
 	// printCos(t)
 
@@ -228,21 +227,18 @@ func decodeDataUnit(elemID byte) [][]byte {
 
 // Перевод изображения в RGB
 func toRGB(img [][]yCbCr) [][]rgb {
-	res := make([][]rgb, len(img))
-	for i := range len(res) {
-		res[i] = make([]rgb, len(img[0]))
-	}
+	res := createEmptyImage(uint16(len(img)), uint16(len(img[0])))
+
 	for i := range mcuHeight {
 		for j := range mcuWidth {
-			// fmt.Printf("y=%d\n", img[i][j].y)
 			img[i][j].y += 128
-			// fmt.Printf("y=%d\n", img[i][j].y)
 			img[i][j].cb += 128
 			img[i][j].cr += 128
 			res[i][j].r = Clamp255(int(math.Round(float64(img[i][j].y) + 1.402*float64((float64(img[i][j].cr)-128)))))
 			res[i][j].g = Clamp255(int(math.Round(float64(img[i][j].y) - 0.34414*float64((float64(img[i][j].cb)-128)) - 0.71414*float64((float64(img[i][j].cr)-128)))))
 			res[i][j].b = Clamp255(int(math.Round(float64(img[i][j].y) + 1.772*float64((float64(img[i][j].cb)-128)))))
 
+			//Вывод в 16 виде преобразованных данных для отладки
 			// fmt.Printf("x%x%x%x ", res[i][j].r, res[i][j].g, res[i][j].b)
 			// if j == 15 {
 			// 	fmt.Printf("\n")
@@ -256,7 +252,7 @@ func toRGB(img [][]yCbCr) [][]rgb {
 
 // Декодирование одного MCU
 func decodeMCU() [][]yCbCr {
-	img := createEmptyMCU()
+	img := createEmptyMCU(mcuHeight, mcuWidth)
 	//Для каждой компоненты
 	for i := range numOfComps {
 		var xPadding byte //Отступ в текущем MCU по x
@@ -272,15 +268,17 @@ func decodeMCU() [][]yCbCr {
 					mcuI := x % (dataUnitRowCount * scalingX) //Координаты в текущем data unit высота
 					mcuJ := y % (dataUnitColCount * scalingY) //Координаты в текущем data unit ширина
 					//В зависимости от компоненты записываем результат в разные поля
-					if i == 0 {
+					switch i {
+					case 0:
 						img[x][y].y = unit[mcuI/scalingX][mcuJ/scalingY]
-					} else if i == 1 {
+					case 1:
 						img[x][y].cb = unit[mcuI/scalingX][mcuJ/scalingY]
-					} else if i == 2 {
+					case 2:
 						img[x][y].cr = unit[mcuI/scalingX][mcuJ/scalingY]
 					}
 				}
 			}
+
 			if comps[i].h > 1 && yPadding == 0 && k != 3 {
 				yPadding += dataUnitRowCount
 			} else if comps[i].v > 1 && xPadding == 0 && k != 3 {
@@ -312,14 +310,16 @@ func makeRestart() bool {
 // Декодирование скана
 func decodeScan() [][]rgb {
 	decodeInit()
-	img := createEmptyImage()
+	img := createEmptyImage(imageHeight, imageWidth)
 	var mcuCount uint //Общее количество прочитанных mcu
 	var row uint16    //Счетчик строк MCU
 	var col uint16    //Счетчик столбцов MCU
 	var i uint16      //Счетчик пикселей в изображении по ширине
 	var j uint16      //Счетчик пикселей в изображении по высоте
+	// Для каждого MCU в изображении
 	for row = 0; row < (imageHeight+(mcuHeight-1))/mcuHeight; row++ {
 		for col = 0; col < (imageWidth+(mcuWidth-1))/mcuWidth; col++ {
+			//Декодировать его и преобразовать в RGB
 			mcu := toRGB(decodeMCU())
 			for i = row * mcuHeight; i < mcuHeight*(row+1) && i < imageHeight; i++ {
 				for j = col * mcuWidth; j < mcuWidth*(col+1) && j < imageWidth; j++ {

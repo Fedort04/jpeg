@@ -131,11 +131,12 @@ func readHuffTable() {
 		log.Println("MakeHuffTable -> error")
 		log.Fatal(err.Error())
 	}
-	if tc == 0 {
+	switch tc {
+	case 0:
 		dcTables[th] = huff
-	} else if tc == 1 {
+	case 1:
 		acTables[th] = huff
-	} else {
+	default:
 		log.Fatal("readHuffTable -> invalid table ID")
 	}
 
