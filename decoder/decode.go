@@ -52,6 +52,7 @@ var prev []int16          //Предыдущие значения DC для де
 var mcuWidth uint16       //Ширина MCU
 var mcuHeight uint16      //Высота MCU
 var dataUnitByComp []byte //Количество блоков для каждой компоненты
+var wasEOI = false        //Флаг встречался ли маркер EOI при выполнении restart
 // var sumUnits byte
 
 // Использовалась при отладке для печати data unit
@@ -296,13 +297,15 @@ func decodeMCU() [][]yCbCr {
 // Выполнение рестарта дельта кодирвоания
 func makeRestart() bool {
 	marker := reader.GetWord()
-	reader.BitsAlign()
 	if marker == EOI {
+		wasEOI = true
 		return true
 	} else if marker >= RST0 && marker <= RST7 {
+		reader.BitsAlign()
 		restart()
 		return true
 	}
+	log.Printf("marker: %x, nextByte: %d", marker, reader.GetNextByte())
 	return false
 }
 
@@ -326,9 +329,17 @@ func decodeScan() [][]rgb {
 					mcuJ := j % mcuHeight       //Счетчик пикселей в MCU по высоте
 					img[i][j] = mcu[mcuI][mcuJ] //Копирование в результирующее изображение
 				}
-				mcuCount++
 			}
+			mcuCount++
 			if mcuCount%uint(restartInterval) == 0 && !makeRestart() {
+				// for i := range 16 {
+				// 	for j := range 16 {
+				// 		fmt.Printf("x%x%x%x ", mcu[i][j].r, mcu[i][j].g, mcu[i][j].b)
+				// 		if j == 15 {
+				// 			fmt.Printf("\n")
+				// 		}
+				// 	}
+				// }
 				log.Fatal("makeRestart wrong marker")
 			}
 		}

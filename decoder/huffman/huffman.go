@@ -28,8 +28,8 @@ func (h *HuffTable) DecodeHuff(reader *binreader.BinReader) uint16 {
 		codeLen++
 		// fmt.Printf("%x\t", code)
 		for i := h.offset[codeLen-1]; i < h.offset[codeLen]; i++ {
-			temp := h.codes[i]
-			if code == temp {
+			// temp := h.codes[i]
+			if code == h.codes[i] {
 				return uint16(h.symbols[i])
 			}
 		}
@@ -64,9 +64,9 @@ func PrintHuffTable(huff *HuffTable) {
 	for i := range NumHuffCodesLen {
 		temp := fmt.Sprintf("%d: ", i+1)
 		for j := huff.offset[i]; j < huff.offset[i+1]; j++ {
-			temp += fmt.Sprintf("%x ", huff.symbols[j])
+			temp += fmt.Sprintf("%x ", huff.codes[j])
 		}
-		log.Print(temp)
+		fmt.Printf("%s\n", temp)
 	}
 	log.Println()
 }

@@ -148,6 +148,7 @@ func readHuffTable() {
 			temp += fmt.Sprintf("AC-table %d\n", th)
 		}
 		log.Print(temp)
+		huffman.PrintHuffTable(huff)
 	}
 
 }
@@ -287,7 +288,7 @@ func ReadJPEG(source string, dump bool) [][]rgb {
 
 	res := readFrame()
 
-	if !readMarker(EOI) {
+	if !wasEOI && !readMarker(EOI) {
 		log.Fatal("Can't read EOI marker")
 	}
 
@@ -336,6 +337,7 @@ func encodeBMP(img [][]rgb, fileName string) {
 }
 
 func main() {
-	img := ReadJPEG("pics/Aqours.jpg", true)
-	encodeBMP(img, "pics/Aqours.bmp")
+	img := ReadJPEG("pics/Aina.jpg", true)
+	encodeBMP(img, "pics/Aina.bmp")
+	//Suwa failed here 138 40 164 4
 }
