@@ -94,6 +94,7 @@ func readApp() {
 // Чтение таблицы квантования
 func readQuantTable() {
 	reader.GetWord()
+	//До тех пор, пока следующий байт не будет маркером
 	for reader.GetNextByte() != 0xFF {
 		tq := reader.GetByte()
 		if tq > numOfTables-1 {
@@ -118,11 +119,13 @@ func readHuffTable() {
 	}
 	offset := make([]byte, huffman.NumHuffCodesLen+1)
 	var sumElem byte //Количество символов
+	//Запись offset
 	for i := 1; i < huffman.NumHuffCodesLen+1; i++ {
 		sumElem += reader.GetByte()
 		offset[i] = sumElem
 	}
 	symbols := make([]byte, sumElem)
+	//Чтение символов
 	for i := range sumElem {
 		symbols[i] = reader.GetByte()
 	}
@@ -190,6 +193,7 @@ func readTables() uint16 {
 func readScanHeader() {
 	reader.GetWord()
 	ns := reader.GetByte()
+	//Для каждой компоненты
 	for range ns {
 		cs := reader.GetByte()
 		td, ta := reader.Get4Bit()
@@ -218,6 +222,7 @@ func readFrameHeader() {
 	imageHeight = reader.GetWord()
 	imageWidth = reader.GetWord()
 	numOfComps = reader.GetByte()
+	//Для каждой компоненты
 	for range numOfComps {
 		c := reader.GetByte()
 		h, v := reader.Get4Bit()
@@ -337,7 +342,6 @@ func encodeBMP(img [][]rgb, fileName string) {
 }
 
 func main() {
-	img := ReadJPEG("pics/Aina.jpg", true)
-	encodeBMP(img, "pics/Aina.bmp")
-	//Suwa failed here 138 40 164 4
+	img := ReadJPEG("pics/Aqours.jpg", true)
+	encodeBMP(img, "pics/Aqours.bmp")
 }

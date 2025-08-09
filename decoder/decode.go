@@ -33,9 +33,9 @@ var idctTable [8][8]float64 = [8][8]float64{
 
 // Структура для хранения данных в YCbCr формате
 type yCbCr struct {
-	y  byte
-	cb byte
-	cr byte
+	y  float32
+	cb float32
+	cr float32
 }
 
 // Структура для хранения данных в RGB формате
@@ -45,6 +45,7 @@ type rgb struct {
 	b byte
 }
 
+const rgbDelta = 128       //Константа, которая прибавляется при переводе в RGB
 const dataUnitRowCount = 8 //Количество строк в data unit
 const dataUnitColCount = 8 //Количество столбцов в data unit
 
@@ -102,6 +103,7 @@ func createEmptyMCU(height uint16, width uint16) [][]yCbCr {
 func decodeInit() {
 	prev = make([]int16, numOfComps)
 	dataUnitByComp = make([]byte, numOfComps)
+	//Количество data unit для каждой компоненты
 	for i := range numOfComps {
 		dataUnitByComp[i] = comps[i].h * comps[i].v
 	}
@@ -180,10 +182,10 @@ func zigZag(unit []int16) [][]int16 {
 }
 
 // Обратное дискретно-косинусное преобразование
-func inverseCosin(unit [][]int16) [][]byte {
-	res := make([][]byte, dataUnitRowCount)
+func inverseCosin(unit [][]int16) [][]float32 {
+	res := make([][]float32, dataUnitRowCount)
 	for i := range dataUnitRowCount {
-		res[i] = make([]byte, dataUnitColCount)
+		res[i] = make([]float32, dataUnitColCount)
 	}
 	for x := range dataUnitRowCount {
 		for y := range dataUnitColCount {
@@ -193,7 +195,7 @@ func inverseCosin(unit [][]int16) [][]byte {
 					sum += float64(unit[u][v]) * idctTable[u][x] * idctTable[v][y]
 				}
 			}
-			res[x][y] = byte(0.25 * sum)
+			res[x][y] = float32(0.25 * sum)
 		}
 	}
 	return res
@@ -213,7 +215,7 @@ func Clamp255(val int) byte {
 }
 
 // Декодирование data unit
-func decodeDataUnit(elemID byte) [][]byte {
+func decodeDataUnit(elemID byte) [][]float32 {
 	temp := make([]int16, dataUnitRowCount*dataUnitColCount)
 	temp[0] = decodeDC(elemID, dcTables[comps[elemID].dcTableID])
 	decodeAC(temp, acTables[comps[elemID].acTableID])
@@ -232,12 +234,12 @@ func toRGB(img [][]yCbCr) [][]rgb {
 
 	for i := range mcuHeight {
 		for j := range mcuWidth {
-			img[i][j].y += 128
-			img[i][j].cb += 128
-			img[i][j].cr += 128
-			res[i][j].r = Clamp255(int(math.Round(float64(img[i][j].y) + 1.402*float64((float64(img[i][j].cr)-128)))))
-			res[i][j].g = Clamp255(int(math.Round(float64(img[i][j].y) - 0.34414*float64((float64(img[i][j].cb)-128)) - 0.71414*float64((float64(img[i][j].cr)-128)))))
-			res[i][j].b = Clamp255(int(math.Round(float64(img[i][j].y) + 1.772*float64((float64(img[i][j].cb)-128)))))
+			img[i][j].y += rgbDelta
+			img[i][j].cb += rgbDelta
+			img[i][j].cr += rgbDelta
+			res[i][j].r = Clamp255(int(math.Round(float64(img[i][j].y) + 1.402*float64((float64(img[i][j].cr)-rgbDelta)))))
+			res[i][j].g = Clamp255(int(math.Round(float64(img[i][j].y) - 0.34414*float64((float64(img[i][j].cb)-rgbDelta)) - 0.71414*float64((float64(img[i][j].cr)-rgbDelta)))))
+			res[i][j].b = Clamp255(int(math.Round(float64(img[i][j].y) + 1.772*float64((float64(img[i][j].cb)-rgbDelta)))))
 
 			//Вывод в 16 виде преобразованных данных для отладки
 			// fmt.Printf("x%x%x%x ", res[i][j].r, res[i][j].g, res[i][j].b)
@@ -332,14 +334,6 @@ func decodeScan() [][]rgb {
 			}
 			mcuCount++
 			if mcuCount%uint(restartInterval) == 0 && !makeRestart() {
-				// for i := range 16 {
-				// 	for j := range 16 {
-				// 		fmt.Printf("x%x%x%x ", mcu[i][j].r, mcu[i][j].g, mcu[i][j].b)
-				// 		if j == 15 {
-				// 			fmt.Printf("\n")
-				// 		}
-				// 	}
-				// }
 				log.Fatal("makeRestart wrong marker")
 			}
 		}
