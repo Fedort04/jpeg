@@ -49,11 +49,11 @@ const rgbDelta = 128       //Константа, которая прибавля
 const dataUnitRowCount = 8 //Количество строк в data unit
 const dataUnitColCount = 8 //Количество столбцов в data unit
 
-var prev []int16          //Предыдущие значения DC для дельта кодирования
-var mcuWidth uint16       //Ширина MCU
-var mcuHeight uint16      //Высота MCU
-var dataUnitByComp []byte //Количество блоков для каждой компоненты
-var wasEOI = false        //Флаг встречался ли маркер EOI при выполнении restart
+var prev []int16             //Предыдущие значения DC для дельта кодирования
+var dataUnitByComp []byte    //Количество блоков для каждой компоненты
+var numOfBlocksHeight uint16 //Количество блоков(MCU) в изображении по высоте
+var numOfBlocksWidth uint16  //Количество блоков(MCU) в изображении по ширине
+var wasEOI = false           //Флаг встречался ли маркер EOI при выполнении restart
 // var sumUnits byte
 
 // Использовалась при отладке для печати data unit
@@ -99,16 +99,36 @@ func createEmptyMCU(height uint16, width uint16) [][]yCbCr {
 	return img
 }
 
+// Сoздание пустой матрицы блоков
+func createBlockMatrix(blocksHeight uint16, blocksWidth uint16) [][]block {
+	blocks := make([][]block, blocksHeight)
+	for i := range blocksHeight {
+		blocks[i] = make([]block, blocksWidth)
+		for j := range blocksWidth {
+			blocks[i][j] = makeBlock()
+		}
+	}
+	return blocks
+}
+
+// Вычисление тех переменных, которые нужны при сканах, но вычисляются единожды
+func preInit() {
+	mcuHeight = uint16(dataUnitRowCount * maxV)
+	mcuWidth = uint16(dataUnitColCount * maxH)
+
+	numOfBlocksHeight = (imageHeight + (mcuHeight - 1)) / mcuHeight
+	numOfBlocksWidth = (imageWidth + (mcuWidth - 1)) / mcuWidth
+}
+
 // Инициализация декодирования, вычисление вспомогательных переменных
 func decodeInit() {
 	prev = make([]int16, numOfComps)
 	dataUnitByComp = make([]byte, numOfComps)
+
 	//Количество data unit для каждой компоненты
 	for i := range numOfComps {
 		dataUnitByComp[i] = comps[i].h * comps[i].v
 	}
-	mcuHeight = uint16(dataUnitRowCount * maxV)
-	mcuWidth = uint16(dataUnitColCount * maxH)
 }
 
 // Сброс дельта-кодирования
@@ -311,18 +331,17 @@ func makeRestart() bool {
 	return false
 }
 
-// Декодирование скана
-func decodeScan() [][]rgb {
+// Декодирование скана, img - прочитанное к моменту вызова функции изображение
+func decodeScan(img [][]rgb) [][]rgb {
 	decodeInit()
-	img := createEmptyImage(imageHeight, imageWidth)
 	var mcuCount uint //Общее количество прочитанных mcu
 	var row uint16    //Счетчик строк MCU
 	var col uint16    //Счетчик столбцов MCU
 	var i uint16      //Счетчик пикселей в изображении по ширине
 	var j uint16      //Счетчик пикселей в изображении по высоте
 	// Для каждого MCU в изображении
-	for row = 0; row < (imageHeight+(mcuHeight-1))/mcuHeight; row++ {
-		for col = 0; col < (imageWidth+(mcuWidth-1))/mcuWidth; col++ {
+	for row = 0; row < numOfBlocksHeight; row++ {
+		for col = 0; col < numOfBlocksWidth; col++ {
 			//Декодировать его и преобразовать в RGB
 			mcu := toRGB(decodeMCU())
 			for i = row * mcuHeight; i < mcuHeight*(row+1) && i < imageHeight; i++ {
@@ -333,10 +352,67 @@ func decodeScan() [][]rgb {
 				}
 			}
 			mcuCount++
-			if mcuCount%uint(restartInterval) == 0 && !makeRestart() {
+			if restartInterval != 0 && mcuCount%uint(restartInterval) == 0 && !makeRestart() {
 				log.Fatal("makeRestart wrong marker")
 			}
 		}
 	}
 	return img
+}
+
+// Вычисление преобразований после чтения всех частей прогрессива
+func progressiveCalc(img [][]block) [][]rgb {
+	res := createEmptyImage(imageHeight, imageWidth)
+
+	for row := range numOfBlocksHeight {
+		for col := range numOfBlocksWidth {
+			mcu := img[row][col].toRGB(quantTables[comps[0].quantTableID], quantTables[comps[1].quantTableID])
+
+			//Копирование в результирующее изображение
+			for i := row * mcuHeight; i < mcuHeight*(row+1) && i < imageHeight; i++ {
+				for j := col * mcuWidth; j < mcuWidth*(col+1) && j < imageWidth; j++ {
+					mcuI := i % mcuWidth  //Счетчик пикселей в MCU по ширине
+					mcuJ := j % mcuHeight //Счетчик пикселей в MCU по высоте
+					res[i][j] = mcu[mcuI][mcuJ]
+				}
+			}
+		}
+	}
+	return res
+}
+
+// Временная функция только для прогрессива================================================
+// Later change params and return with a block matrix
+func decodeProgScan(blocks [][]block) {
+	decodeInit()
+
+	//Для каждого блока
+	for row := range numOfBlocksHeight {
+		for col := range numOfBlocksWidth {
+
+			//Для каждой цветовой компоненты
+			for i := range comps {
+				if !comps[i].used {
+					continue
+				}
+
+				if startSpectral == 0 && approxH == 0 { //Первое чтение DC
+					switch i {
+					case 0:
+						blocks[row][col].Y[0] = decodeDC(byte(i), dcTables[comps[i].dcTableID]) << int16(approxL)
+					case 1:
+						blocks[row][col].Cb[0] = decodeDC(byte(i), dcTables[comps[i].dcTableID]) << int16(approxL)
+					case 2:
+						blocks[row][col].Cr[0] = decodeDC(byte(i), dcTables[comps[i].dcTableID]) << int16(approxL)
+					}
+				} else if startSpectral != 0 && approxH == 0 { //Первое чтение AC
+
+				} else if startSpectral == 0 && approxH != 0 { //Повторное чтение DC
+
+				} else { //Повторное чтение AC
+
+				}
+			}
+		}
+	}
 }

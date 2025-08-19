@@ -8,13 +8,14 @@ import (
 	"log"
 )
 
-// Структура цветовой компоненты
+// Структура цветовой компоненты, данные для текущего скана
 type component struct {
 	h            byte
 	v            byte
 	quantTableID byte //ID таблицы квантования для этого цвета
 	dcTableID    byte //DC таблица для этого цвета
 	acTableID    byte //AC таблица для этого цвета
+	used         bool //Флаг использования компоненты в текущем скане
 }
 
 // Маркеры всех используемых заголовков
@@ -22,6 +23,7 @@ const (
 	SOI   uint16 = 0xFFD8
 	EOI   uint16 = 0xFFD9
 	SOF0  uint16 = 0xFFC0
+	SOF2  uint16 = 0xFFC2
 	APP0  uint16 = 0xFFE0
 	APP15 uint16 = 0xFFEF
 	DQT   uint16 = 0xFFDB
@@ -38,6 +40,7 @@ const colCount = 8     //Количество столбцов
 const sizeOfTable = 64 //Количество элементов в одной таблице
 
 var withDump bool = false                    //Флаг вывода информации заголовков в лог
+var isProgressive bool                       //Флаг для прогрессивного декодирования
 var reader *binreader.BinReader              //Объект для чтения файла
 var quantTables [numOfTables][]byte          //Массив с таблицами квантования
 var acTables [numOfTables]*huffman.HuffTable //Массив с AC таблицами Хаффмана
@@ -50,10 +53,10 @@ var maxV byte                                //Максимальный V фак
 var numOfComps byte                          //Количество цветовых компонет в изображении
 var comps [maxComps]component                //Массив с данными о компонентах
 var restartInterval uint16                   //Интервал перезапуска дельта кодирования
-var startSpectral byte
-var endSpectral byte
-var ah byte
-var al byte
+var startSpectral byte                       //Начало spectral selection для текущего скана
+var endSpectral byte                         //Конец spectral selection для текущего скана
+var approxH byte                             //Предыдущий бит для аппроксимации компоненты для текущего скана
+var approxL byte                             //Текущий бит для аппроксимации компоненты для текущего скана
 
 // Вывод компоненты в лог
 func printComponent(c component) {
@@ -84,10 +87,11 @@ func readMarker(marker uint16) bool {
 // Чтение сегмента приложения
 func readApp() {
 	ln := reader.GetWord()
-	temp := reader.GetArray(ln - 2)
+	reader.GetArray(ln - 2)
 
 	if withDump {
-		log.Println("APP", string(temp))
+		log.Print("APP")
+		// log.Println("APP", string(temp))
 	}
 }
 
@@ -189,29 +193,40 @@ func readTables() uint16 {
 	return marker
 }
 
+// Обновление флагов использования в скане для каждой компоненты
+func updateFlags() {
+	for i := range comps {
+		comps[i].used = false
+	}
+}
+
 // Чтение заголовка кадра
 func readScanHeader() {
 	reader.GetWord()
 	ns := reader.GetByte()
 	//Для каждой компоненты
+	updateFlags()
 	for range ns {
 		cs := reader.GetByte()
 		td, ta := reader.Get4Bit()
 		comps[cs-1].dcTableID = td
 		comps[cs-1].acTableID = ta
+		comps[cs-1].used = true
 	}
 	startSpectral = reader.GetByte()
 	endSpectral = reader.GetByte()
-	ah, al = reader.Get4Bit()
+	approxH, approxL = reader.Get4Bit()
 
 	if withDump {
 		log.Print("SOS")
 		for i, temp := range comps {
-			log.Printf("component %d:\tDC: %d\tAC: %d\n", i+1, temp.dcTableID, temp.acTableID)
+			if temp.used {
+				log.Printf("component %d:\tDC: %d\tAC: %d\n", i+1, temp.dcTableID, temp.acTableID)
+			}
 		}
 		log.Print("start Spectral Selection: ", startSpectral)
 		log.Print("end Spectral Selection: ", endSpectral)
-		log.Print("approximation high: ", ah, "; approximation low: ", al)
+		log.Print("approximation high: ", approxH, "; approximation low: ", approxL)
 	}
 }
 
@@ -249,23 +264,49 @@ func readFrameHeader() {
 }
 
 // Чтение скана
-func readScan() [][]rgb {
+func readScans() [][]rgb {
+
+	//===============================================
+	if isProgressive { //Считает в цикле все сканы, а в конце проводит вычисления по функции и возвращает уже ргб
+		blocks := createBlockMatrix(numOfBlocksHeight, numOfBlocksWidth)
+
+		for range 2 {
+			nextMarker := readTables()
+			if nextMarker != SOS {
+				log.Fatalf("readFrame can't read SOS\nMarker: %x", nextMarker)
+			}
+
+			readScanHeader()
+			decodeProgScan(blocks)
+		}
+		return progressiveCalc(blocks)
+	}
+
 	nextMarker := readTables()
 	if nextMarker != SOS {
 		log.Fatalf("readFrame can't read SOS\nMarker: %x", nextMarker)
 	}
+
 	readScanHeader()
-	return decodeScan()
+	img := createEmptyImage(imageHeight, imageWidth)
+	return decodeScan(img)
 }
 
 // Чтение кадра
 func readFrame() [][]rgb {
 	nextMarker := readTables()
-	if nextMarker != SOF0 {
-		log.Fatalf("readFrame can't read SOF0\nMarker: %x", nextMarker)
+	switch nextMarker {
+	case SOF0:
+		isProgressive = false
+	case SOF2:
+		isProgressive = true
+	default:
+		log.Fatalf("readFrame can't read SOF0 or SOF2\nMarker: %x", nextMarker)
 	}
 	readFrameHeader()
-	res := readScan()
+
+	preInit()
+	res := readScans()
 
 	if withDump {
 		log.Print("Scan was readed")
@@ -293,13 +334,13 @@ func ReadJPEG(source string, dump bool) [][]rgb {
 
 	res := readFrame()
 
-	if !wasEOI && !readMarker(EOI) {
-		log.Fatal("Can't read EOI marker")
-	}
+	// if !wasEOI && !readMarker(EOI) {
+	// 	log.Fatal("Can't read EOI marker")
+	// }
 
-	if withDump {
-		log.Print("EOI")
-	}
+	// if withDump {
+	// 	log.Print("EOI")
+	// }
 
 	return res
 }
@@ -344,4 +385,8 @@ func encodeBMP(img [][]rgb, fileName string) {
 func main() {
 	img := ReadJPEG("pics/Aqours.jpg", true)
 	encodeBMP(img, "pics/Aqours.bmp")
+	// img := ReadJPEG("pics/AqoursProgressive.jpeg", true)
+	log.Print("READ SUCCESS")
+	// encodeBMP(img, "pics/AqoursProgressive.bmp")
+	log.Print("BMP SUCCESS")
 }

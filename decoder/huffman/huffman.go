@@ -8,7 +8,7 @@ import (
 )
 
 const NumHuffCodesLen = 16 //Количество длин кодов Хаффмана
-const maxNumHuffSym = 162  //Максимальное количество символов в таблице Хаффмана
+const maxNumHuffSym = 176  //Максимальное количество символов в таблице Хаффмана
 
 // Структура таблицы Хаффмана
 type HuffTable struct {
