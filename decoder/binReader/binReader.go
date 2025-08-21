@@ -45,6 +45,11 @@ func (b *BinReader) SetEndian(end Endian) {
 	}
 }
 
+// Необходимо вызывать при начале побитового чтения
+func (b *BinReader) UpdateBitRead() {
+	b.bitCount = 0
+}
+
 // Чтение одного байта
 func (b *BinReader) GetByte() byte {
 	ans, err := b.src.ReadByte()
@@ -113,6 +118,9 @@ func (b *BinReader) GetBit() byte {
 
 // Чтение n бит
 func (b *BinReader) GetBits(n byte) uint16 {
+	if n == 0 {
+		return 0
+	}
 	var ans uint16
 	for range n {
 		ans = ans << 1

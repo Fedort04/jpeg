@@ -22,9 +22,9 @@ func makeBlock() block {
 }
 
 // Перевод блока в RGB c проведением деквантования, ОДКП
-func (b *block) toRGB(quantTableL []byte, quantTableCr []byte) [][]rgb {
+func (b *block) toRGB(quantTableL []byte, quantTableCb []byte, quantTableCr []byte) [][]rgb {
 	dequant(b.Y, quantTableL)
-	dequant(b.Cb, quantTableCr)
+	dequant(b.Cb, quantTableCb)
 	dequant(b.Cr, quantTableCr)
 
 	y := inverseCosin(zigZag(b.Y))
@@ -32,6 +32,7 @@ func (b *block) toRGB(quantTableL []byte, quantTableCr []byte) [][]rgb {
 	cr := inverseCosin(zigZag(b.Cr))
 
 	lum := createEmptyMCU(mcuHeight, mcuWidth)
+	//Копирование в структуру YCbCr
 	for i := range mcuHeight {
 		for j := range mcuWidth {
 			lum[i][j].y = y[i][j]

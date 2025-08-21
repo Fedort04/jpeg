@@ -266,18 +266,25 @@ func readFrameHeader() {
 // Чтение скана
 func readScans() [][]rgb {
 
-	//===============================================
+	//================================================
 	if isProgressive { //Считает в цикле все сканы, а в конце проводит вычисления по функции и возвращает уже ргб
 		blocks := createBlockMatrix(numOfBlocksHeight, numOfBlocksWidth)
 
-		for range 2 {
+		for {
 			nextMarker := readTables()
-			if nextMarker != SOS {
+			if nextMarker == EOI {
+				wasEOI = true
+				break
+			} else if nextMarker != SOS {
 				log.Fatalf("readFrame can't read SOS\nMarker: %x", nextMarker)
 			}
 
+			// log.Printf("Scan %d!!!!!!!!!!!!!", i+1)
 			readScanHeader()
 			decodeProgScan(blocks)
+			if reader.GetNextByte() != 0xFF {
+				reader.BitsAlign()
+			}
 		}
 		return progressiveCalc(blocks)
 	}
@@ -334,13 +341,13 @@ func ReadJPEG(source string, dump bool) [][]rgb {
 
 	res := readFrame()
 
-	// if !wasEOI && !readMarker(EOI) {
-	// 	log.Fatal("Can't read EOI marker")
-	// }
+	if !wasEOI && !readMarker(EOI) {
+		log.Fatal("Can't read EOI marker")
+	}
 
-	// if withDump {
-	// 	log.Print("EOI")
-	// }
+	if withDump {
+		log.Print("EOI")
+	}
 
 	return res
 }
@@ -383,10 +390,10 @@ func encodeBMP(img [][]rgb, fileName string) {
 }
 
 func main() {
-	img := ReadJPEG("pics/Aqours.jpg", true)
-	encodeBMP(img, "pics/Aqours.bmp")
-	// img := ReadJPEG("pics/AqoursProgressive.jpeg", true)
+	// img := ReadJPEG("pics/Aqours.jpg", true)
+	// encodeBMP(img, "pics/Aqours.bmp")
+	img := ReadJPEG("pics/AqoursProgressive.jpeg", true)
 	log.Print("READ SUCCESS")
-	// encodeBMP(img, "pics/AqoursProgressive.bmp")
+	encodeBMP(img, "pics/AqoursProgressive.bmp")
 	log.Print("BMP SUCCESS")
 }
