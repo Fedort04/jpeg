@@ -49,12 +49,15 @@ const rgbDelta = 128       //Константа, которая прибавля
 const dataUnitRowCount = 8 //Количество строк в data unit
 const dataUnitColCount = 8 //Количество столбцов в data unit
 
-var skips uint16             //Счетчик пропусков вычислений в progressive
-var prev []int16             //Предыдущие значения DC для дельта кодирования
-var dataUnitByComp []byte    //Количество блоков для каждой компоненты
-var numOfBlocksHeight uint16 //Количество блоков(MCU) в изображении по высоте
-var numOfBlocksWidth uint16  //Количество блоков(MCU) в изображении по ширине
-var wasEOI = false           //Флаг встречался ли маркер EOI при выполнении restart
+var numOfMcuWidth uint16  //Количество MCU в скане при baseline по высоте
+var numOfMcuHeight uint16 //Количество MCU в скане при baseline по ширине
+var mcuHeight uint16      //Высота MCU
+var mcuWidth uint16       //Ширина MCU
+var skips uint16          //Счетчик пропусков вычислений в progressive
+var prev []int16          //Предыдущие значения DC для дельта кодирования
+var dataUnitByComp []byte //Количество блоков для каждой компоненты
+
+var wasEOI = false //Флаг встречался ли маркер EOI при выполнении restart
 // var sumUnits byte
 
 // Использовалась при отладке для печати data unit
@@ -118,21 +121,26 @@ func preInit() {
 	mcuHeight = uint16(dataUnitRowCount * maxV)
 	mcuWidth = uint16(dataUnitColCount * maxH)
 
-	numOfBlocksHeight = (imageHeight + (mcuHeight - 1)) / mcuHeight
-	numOfBlocksWidth = (imageWidth + (mcuWidth - 1)) / mcuWidth
+	//Количество data unit для каждой компоненты
+	dataUnitByComp = make([]byte, numOfComps)
+	for i := range numOfComps {
+		dataUnitByComp[i] = comps[i].h * comps[i].v
+	}
+
+	if isProgressive {
+		numOfBlocksHeight = (imageHeight + (blockHeight - 1)) / (blockHeight)
+		numOfBlocksWidth = (imageWidth + (blockWidth - 1)) / (blockWidth)
+	} else {
+		numOfMcuHeight = (imageHeight + (mcuHeight - 1)) / mcuHeight
+		numOfMcuWidth = (imageWidth + (mcuWidth - 1)) / mcuWidth
+	}
 }
 
 // Инициализация декодирования, вычисление вспомогательных переменных
 func decodeInit() {
 	prev = make([]int16, numOfComps)
-	dataUnitByComp = make([]byte, numOfComps)
 	skips = 0
 	reader.UpdateBitRead()
-
-	//Количество data unit для каждой компоненты
-	for i := range numOfComps {
-		dataUnitByComp[i] = comps[i].h * comps[i].v
-	}
 }
 
 // Сброс дельта-кодирования
@@ -274,8 +282,18 @@ func decodeDataUnit(elemID byte) [][]float32 {
 func toRGB(img [][]yCbCr) [][]rgb {
 	res := createEmptyImage(uint16(len(img)), uint16(len(img[0])))
 
-	for i := range mcuHeight {
-		for j := range mcuWidth {
+	var width byte
+	var height byte
+	if isProgressive {
+		width = blockWidth
+		height = blockHeight
+	} else {
+		width = byte(mcuWidth)
+		height = byte(mcuHeight)
+	}
+
+	for i := range height {
+		for j := range width {
 			img[i][j].y += rgbDelta
 			img[i][j].cb += rgbDelta
 			img[i][j].cr += rgbDelta
@@ -363,8 +381,8 @@ func decodeScan(img [][]rgb) [][]rgb {
 	var i uint16      //Счетчик пикселей в изображении по ширине
 	var j uint16      //Счетчик пикселей в изображении по высоте
 	// Для каждого MCU в изображении
-	for row = 0; row < numOfBlocksHeight; row++ {
-		for col = 0; col < numOfBlocksWidth; col++ {
+	for row = 0; row < numOfMcuHeight; row++ {
+		for col = 0; col < numOfMcuWidth; col++ {
 			//Декодировать его и преобразовать в RGB
 			mcu := toRGB(decodeMCU())
 			for i = row * mcuHeight; i < mcuHeight*(row+1) && i < imageHeight; i++ {
@@ -393,10 +411,10 @@ func progressiveCalc(img [][]block) [][]rgb {
 			mcu := img[row][col].toRGB(quantTables[comps[0].quantTableID], quantTables[comps[1].quantTableID], quantTables[comps[2].quantTableID])
 
 			//Копирование в результирующее изображение
-			for i := row * mcuHeight; i < mcuHeight*(row+1) && i < imageHeight; i++ {
-				for j := col * mcuWidth; j < mcuWidth*(col+1) && j < imageWidth; j++ {
-					mcuI := i % mcuWidth  //Счетчик пикселей в MCU по ширине
-					mcuJ := j % mcuHeight //Счетчик пикселей в MCU по высоте
+			for i := row * blockHeight; i < blockHeight*(row+1) && i < imageHeight; i++ {
+				for j := col * blockWidth; j < blockWidth*(col+1) && j < imageWidth; j++ {
+					mcuI := i % blockWidth  //Счетчик пикселей в MCU по ширине
+					mcuJ := j % blockHeight //Счетчик пикселей в MCU по высоте
 					res[i][j] = mcu[mcuI][mcuJ]
 				}
 			}
@@ -410,8 +428,80 @@ func decodeProgScan(blocks [][]block) {
 	decodeInit()
 
 	var blockCount uint16
+	fmt.Printf("Dataunits: y:%d cb:%d cr:%d\n", dataUnitByComp[0], dataUnitByComp[1], dataUnitByComp[2])
 
-	//Для каждого блока
+	//Chroma subsampling для DC
+	if true && endSpectral != 5 && startSpectral != 6 {
+		//Поблочное чтение со сдвигом на subsampling
+		//Например, maxH:2<->maxV:2 будут читаться блоками 2х2
+		for row := uint16(0); row < numOfBlocksHeight; row += uint16(maxV) {
+			for col := uint16(0); col < numOfBlocksWidth; col += uint16(maxH) {
+				for i := range comps {
+					if !comps[i].used {
+						continue
+					}
+
+					var readed byte
+					var value int16
+					var bit byte
+					temp := make([]int16, 64)
+
+					for xPadding := uint16(0); xPadding < uint16(maxV) && (row+xPadding) < numOfBlocksHeight; xPadding++ {
+						for yPadding := uint16(0); yPadding < uint16(maxH) && (col+yPadding) < numOfBlocksWidth; yPadding++ {
+							if startSpectral == 0 && approxH == 0 { //Первое чтение DC=======================
+								if readed < dataUnitByComp[i] {
+									value = decodeDC(byte(i), dcTables[comps[i].dcTableID]) << int16(approxL)
+									readed++
+								}
+								switch i {
+								case 0:
+									blocks[row+xPadding][col+yPadding].Y[0] = value
+								case 1:
+									blocks[row+xPadding][col+yPadding].Cb[0] = value
+								case 2:
+									blocks[row+xPadding][col+yPadding].Cr[0] = value
+								}
+
+							} else if startSpectral == 0 && approxH != 0 { //Повторное чтение DC=======================
+								if readed < dataUnitByComp[i] {
+									bit = reader.GetBit()
+									readed++
+								}
+								switch i {
+								case 0:
+									blocks[row+xPadding][col+yPadding].Y[0] |= int16(bit << approxL)
+								case 1:
+									blocks[row+xPadding][col+yPadding].Cb[0] |= int16(bit << approxL)
+								case 2:
+									blocks[row+xPadding][col+yPadding].Cr[0] |= int16(bit << approxL)
+								}
+
+							} else if startSpectral != 0 && approxH == 0 { //ошибка, так как должно построчно читаться only luminance...
+								var arr []int16
+								switch i {
+								case 1:
+									arr = blocks[row+xPadding][col+yPadding].Cb
+								case 2:
+									arr = blocks[row+xPadding][col+yPadding].Cr
+								}
+								if readed < dataUnitByComp[i] {
+									temp = make([]int16, 64)
+									copy(temp, arr)
+									decodeAC(temp, acTables[comps[i].acTableID])
+									readed++
+								}
+								copy(arr, temp)
+							}
+						}
+					}
+				}
+			}
+		}
+
+		return
+	}
+
+	//Для каждого блока (для AC)
 	for row := range numOfBlocksHeight {
 		for col := range numOfBlocksWidth {
 			blockCount++
@@ -422,17 +512,7 @@ func decodeProgScan(blocks [][]block) {
 					continue
 				}
 
-				if startSpectral == 0 && approxH == 0 { //Первое чтение DC=======================
-					switch i {
-					case 0:
-						blocks[row][col].Y[0] = decodeDC(byte(i), dcTables[comps[i].dcTableID]) << int16(approxL)
-					case 1:
-						blocks[row][col].Cb[0] = decodeDC(byte(i), dcTables[comps[i].dcTableID]) << int16(approxL)
-					case 2:
-						blocks[row][col].Cr[0] = decodeDC(byte(i), dcTables[comps[i].dcTableID]) << int16(approxL)
-					}
-
-				} else if startSpectral != 0 && approxH == 0 { //Первое чтение AC=======================
+				if startSpectral != 0 && approxH == 0 { //Первое чтение AC=======================
 					switch i {
 					case 0:
 						decodeAC(blocks[row][col].Y, acTables[comps[i].acTableID])
@@ -440,17 +520,6 @@ func decodeProgScan(blocks [][]block) {
 						decodeAC(blocks[row][col].Cb, acTables[comps[i].acTableID])
 					case 2:
 						decodeAC(blocks[row][col].Cr, acTables[comps[i].acTableID])
-					}
-
-				} else if startSpectral == 0 && approxH != 0 { //Повторное чтение DC=======================
-					bit := reader.GetBit()
-					switch i {
-					case 0:
-						blocks[row][col].Y[0] |= int16(bit << approxL)
-					case 1:
-						blocks[row][col].Cb[0] |= int16(bit << approxL)
-					case 2:
-						blocks[row][col].Cr[0] |= int16(bit << approxL)
 					}
 
 				} else { //Повторное чтение AC=======================
@@ -470,6 +539,7 @@ func decodeProgScan(blocks [][]block) {
 					case 2:
 						arr = blocks[row][col].Cr
 					}
+
 					// Если не нужно пропускать диапазоны
 					if skips == 0 {
 						for ; k <= endSpectral; k++ {
@@ -522,9 +592,7 @@ func decodeProgScan(blocks [][]block) {
 								arr[k] = coeff
 							}
 						}
-					}
-
-					if skips > 0 { //skips > 0
+					} else { //skips > 0
 						//Считываем для каждого ненулевого значения новый бит
 						for ; k <= endSpectral; k++ {
 							if arr[k] != 0 {
@@ -539,7 +607,6 @@ func decodeProgScan(blocks [][]block) {
 								}
 							}
 						}
-
 						skips -= 1
 					}
 				}

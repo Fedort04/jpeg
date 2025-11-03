@@ -1,8 +1,10 @@
 package main
 
 // Инициализация при decodeInit
-var mcuWidth uint16  //Ширина MCU
-var mcuHeight uint16 //Высота MCU
+const blockWidth = 8         //Ширина блока
+const blockHeight = 8        //Высота блока
+var numOfBlocksHeight uint16 //Количество блоков(MCU) в изображении по высоте
+var numOfBlocksWidth uint16  //Количество блоков(MCU) в изображении по ширине
 
 // Структура для MCU
 type block struct {
@@ -15,9 +17,9 @@ type block struct {
 // Конструткор блока
 func makeBlock() block {
 	var res block
-	res.Y = make([]int16, mcuHeight*mcuWidth)
-	res.Cb = make([]int16, mcuHeight*mcuWidth)
-	res.Cr = make([]int16, mcuHeight*mcuWidth)
+	res.Y = make([]int16, blockHeight*blockWidth)
+	res.Cb = make([]int16, blockHeight*blockWidth)
+	res.Cr = make([]int16, blockHeight*blockWidth)
 	return res
 }
 
@@ -31,10 +33,10 @@ func (b *block) toRGB(quantTableL []byte, quantTableCb []byte, quantTableCr []by
 	cb := inverseCosin(zigZag(b.Cb))
 	cr := inverseCosin(zigZag(b.Cr))
 
-	lum := createEmptyMCU(mcuHeight, mcuWidth)
+	lum := createEmptyMCU(uint16(blockHeight), uint16(blockWidth))
 	//Копирование в структуру YCbCr
-	for i := range mcuHeight {
-		for j := range mcuWidth {
+	for i := range blockHeight {
+		for j := range blockWidth {
 			lum[i][j].y = y[i][j]
 			lum[i][j].cb = cb[i][j]
 			lum[i][j].cr = cr[i][j]

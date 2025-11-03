@@ -27,10 +27,10 @@ func (h *HuffTable) DecodeHuff(reader *binreader.BinReader) uint16 {
 		code += uint16(reader.GetBit())
 		codeLen++
 		// fmt.Printf("%x\t", code)
-		// if codeLen > 16 {
-		// 	fmt.Printf("code: %x, nextWords: %x %x\n", code, reader.GetWord(), reader.GetWord())
-		// 	return 0xFF
-		// }
+		if codeLen > 16 {
+			fmt.Printf("code: %x, nextWords: %d %d %d\n", code, reader.GetByte(), reader.GetByte(), reader.GetByte())
+			// 	return 0xFF
+		}
 		for i := h.offset[codeLen-1]; i < h.offset[codeLen]; i++ {
 			// temp := h.codes[i]
 			if code == h.codes[i] {
