@@ -1,41 +1,31 @@
-package main
+package decoder
 
 import (
-	"decoder/huffman"
 	"fmt"
+	"jpeg/decoder/huffman"
 	"log"
 	"math"
 )
 
-// Последовательность зиг-зага
-var zigZagTable [8][8]byte = [8][8]byte{
-	{0, 1, 5, 6, 14, 15, 27, 28},
-	{2, 4, 7, 13, 16, 26, 29, 42},
-	{3, 8, 12, 17, 25, 30, 41, 43},
-	{9, 11, 18, 24, 31, 40, 44, 53},
-	{10, 19, 23, 32, 39, 45, 52, 54},
-	{20, 22, 33, 38, 46, 51, 55, 60},
-	{21, 34, 37, 47, 50, 56, 59, 61},
-	{35, 36, 48, 49, 57, 58, 62, 63},
-}
+const rgbDelta = 128 //Константа, которая прибавляется при переводе в RGB
 
-// Таблица с коэффициентами в ОДКП
-var idctTable [8][8]float64 = [8][8]float64{
-	{0.707107, 0.707107, 0.707107, 0.707107, 0.707107, 0.707107, 0.707107, 0.707107},
-	{0.980785, 0.831470, 0.555570, 0.195090, -0.195090, -0.555570, -0.831470, -0.980785},
-	{0.923880, 0.382683, -0.382683, -0.923880, -0.923880, -0.382683, 0.382683, 0.923880},
-	{0.831470, -0.195090, -0.980785, -0.555570, 0.555570, 0.980785, 0.195090, -0.831470},
-	{0.707107, -0.707107, -0.707107, 0.707107, 0.707107, -0.707107, -0.707107, 0.707107},
-	{0.555570, -0.980785, 0.195090, 0.831470, -0.831470, -0.195090, 0.980785, -0.555570},
-	{0.382683, -0.923880, 0.923880, -0.382683, -0.382683, 0.923880, -0.923880, 0.382683},
-	{0.195090, -0.555570, 0.831470, -0.980785, 0.980785, -0.831470, 0.555570, -0.195090},
-}
+type yCbCrMatrix = [][]yCbCr
 
 // Структура для хранения данных в YCbCr формате
 type yCbCr struct {
 	y  float32
 	cb float32
 	cr float32
+}
+
+// Перевод в RGB пространство по указателю
+func (cur *yCbCr) toRGB(res *rgb) {
+	cur.y += rgbDelta
+	cur.cb += rgbDelta
+	cur.cr += rgbDelta
+	res.r = Clamp255(int(math.Round(float64(cur.y) + 1.402*float64((float64(cur.cr)-rgbDelta)))))
+	res.g = Clamp255(int(math.Round(float64(cur.y) - 0.34414*float64((float64(cur.cb)-rgbDelta)) - 0.71414*float64((float64(cur.cr)-rgbDelta)))))
+	res.b = Clamp255(int(math.Round(float64(cur.y) + 1.772*float64((float64(cur.cb)-rgbDelta)))))
 }
 
 // Структура для хранения данных в RGB формате
@@ -45,108 +35,68 @@ type rgb struct {
 	b byte
 }
 
-const rgbDelta = 128       //Константа, которая прибавляется при переводе в RGB
-const dataUnitRowCount = 8 //Количество строк в data unit
-const dataUnitColCount = 8 //Количество столбцов в data unit
-
-var numOfMcuWidth uint16  //Количество MCU в скане при baseline по высоте
-var numOfMcuHeight uint16 //Количество MCU в скане при baseline по ширине
-var mcuHeight uint16      //Высота MCU
-var mcuWidth uint16       //Ширина MCU
-var skips uint16          //Счетчик пропусков вычислений в progressive
+var bandSkips uint16      //Счетчик пропусков вычислений в progressive
 var prev []int16          //Предыдущие значения DC для дельта кодирования
-var dataUnitByComp []byte //Количество блоков для каждой компоненты
+var dataUnitByComp []byte //Количество блоков для каждой компоненты (позже вероятно)
 
 var wasEOI = false //Флаг встречался ли маркер EOI при выполнении restart
-// var sumUnits byte
 
-// Использовалась при отладке для печати data unit
-func printUnit(table []int16) {
-	for i := 0; i < 8; i++ {
-		for j := 0; j < 8; j++ {
-			fmt.Printf("%d\t", table[i*8+j])
-		}
-		fmt.Printf("\n")
-
-	}
-	fmt.Printf("\n\n")
-	// log.Fatal()
-}
-
-// Использовалась при отладке для печати результата ОДКП
-func printCos(table [][]byte) {
-	for i := 0; i < 8; i++ {
-		for j := 0; j < 8; j++ {
-			fmt.Printf("%d\t", table[i][j])
-		}
-		fmt.Printf("\n")
-
-	}
-	fmt.Printf("\n\n")
-}
-
-// Создание пустого изображения YCbCr
-func createEmptyImage(height uint16, width uint16) [][]rgb {
-	img := make([][]rgb, height)
+// Создание пустого изображения RGB
+func createRGBMatrix(height uint16, width uint16) [][]rgb {
+	res := make([][]rgb, height)
 	for i := range height {
-		img[i] = make([]rgb, width)
+		res[i] = make([]rgb, width)
 	}
-	return img
+	return res
 }
 
-// Создание пустого MCU
-func createEmptyMCU(height uint16, width uint16) [][]yCbCr {
-	img := make([][]yCbCr, height)
+// Создание yCbCrMatrix
+func createYCbCrMatrix(height byte, width byte) yCbCrMatrix {
+	res := make([][]yCbCr, height)
 	for i := range height {
-		img[i] = make([]yCbCr, width)
+		res[i] = make([]yCbCr, width)
 	}
-	return img
+	return res
 }
 
-// Сoздание пустой матрицы блоков
-func createBlockMatrix(blocksHeight uint16, blocksWidth uint16) [][]block {
-	blocks := make([][]block, blocksHeight)
-	for i := range blocksHeight {
-		blocks[i] = make([]block, blocksWidth)
-		for j := range blocksWidth {
-			blocks[i][j] = makeBlock()
+// Создание пустого блока размерами [height][width] из MCU(8х8) в YCbCr
+func createYCbCrBlock(height byte, width byte) [][]yCbCrMatrix {
+	res := make([][]yCbCrMatrix, height)
+	for i := range height {
+		res[i] = make([]yCbCrMatrix, width)
+		for j := range width {
+			res[i][j] = createYCbCrMatrix(UnitRowCount, UnitColCount)
 		}
 	}
-	return blocks
+	return res
 }
 
 // Вычисление тех переменных, которые нужны при сканах, но вычисляются единожды
-func preInit() {
-	skips = 0
-	mcuHeight = uint16(dataUnitRowCount * maxV)
-	mcuWidth = uint16(dataUnitColCount * maxH)
-
+func unitsInit() {
 	//Количество data unit для каждой компоненты
 	dataUnitByComp = make([]byte, numOfComps)
 	for i := range numOfComps {
 		dataUnitByComp[i] = comps[i].h * comps[i].v
 	}
 
-	if isProgressive {
-		numOfBlocksHeight = (imageHeight + (blockHeight - 1)) / (blockHeight)
-		numOfBlocksWidth = (imageWidth + (blockWidth - 1)) / (blockWidth)
-	} else {
-		numOfMcuHeight = (imageHeight + (mcuHeight - 1)) / mcuHeight
-		numOfMcuWidth = (imageWidth + (mcuWidth - 1)) / mcuWidth
-	}
+	NumOfMCUHeight = (imageHeight + (UnitRowCount - 1)) / (UnitRowCount)
+	NumOfMCUHeight += NumOfMCUHeight % uint16(maxV)
+
+	NumOfMCUWidth = (imageWidth + (UnitColCount - 1)) / (UnitColCount)
+	NumOfMCUWidth += NumOfMCUWidth % uint16(maxH)
 }
 
-// Инициализация декодирования, вычисление вспомогательных переменных
+// Инициализация дельта-декодирования, перезапуск bands, инициализация побитового чтения
 func decodeInit() {
 	prev = make([]int16, numOfComps)
-	skips = 0
-	reader.UpdateBitRead()
+	bandSkips = 0
+	reader.BitReadInit()
 }
 
 // Сброс дельта-кодирования
 func restart() {
 	prev = make([]int16, numOfComps)
-	skips = 0
+	bandSkips = 0
 }
 
 // Декодирование знака в потоке Хаффмана
@@ -169,15 +119,13 @@ func decodeDC(id byte, huff *huffman.HuffTable) int16 {
 
 // Декодирование AC элемента
 func decodeAC(unit []int16, huff *huffman.HuffTable) {
-	if skips > 0 {
-		skips--
+	if bandSkips > 0 {
+		bandSkips--
 		return
 	}
 
-	// unitLen := byte(dataUnitRowCount * dataUnitColCount)
 	unitLen := endSpectral
 
-	//При baseline отсчет ведется учитывая DC, что следует учесть
 	var k byte
 	if isProgressive {
 		k = startSpectral
@@ -192,8 +140,8 @@ func decodeAC(unit []int16, huff *huffman.HuffTable) {
 
 		if small == 0 {
 			if big != 15 {
-				skips = ((1 << big) - 1)
-				skips += reader.GetBits(big)
+				bandSkips = ((1 << big) - 1)
+				bandSkips += reader.GetBits(big)
 				// log.Printf("small: %d, big : %d", small, big)
 				break
 			} else {
@@ -211,46 +159,6 @@ func decodeAC(unit []int16, huff *huffman.HuffTable) {
 	}
 }
 
-// Деквантование
-func dequant(unit []int16, table []byte) {
-	for i := range unit {
-		unit[i] = unit[i] * int16(table[i])
-	}
-}
-
-// Зиг-заг преобразование
-func zigZag(unit []int16) [][]int16 {
-	//Создание матрицы
-	res := make([][]int16, dataUnitRowCount)
-	for i := range dataUnitRowCount {
-		res[i] = make([]int16, dataUnitColCount)
-		for j := range dataUnitColCount {
-			res[i][j] = unit[zigZagTable[i][j]]
-		}
-	}
-	return res
-}
-
-// Обратное дискретно-косинусное преобразование
-func inverseCosin(unit [][]int16) [][]float32 {
-	res := make([][]float32, dataUnitRowCount)
-	for i := range dataUnitRowCount {
-		res[i] = make([]float32, dataUnitColCount)
-	}
-	for x := range dataUnitRowCount {
-		for y := range dataUnitColCount {
-			sum := 0.0
-			for u := range dataUnitRowCount {
-				for v := range dataUnitColCount {
-					sum += float64(unit[u][v]) * idctTable[u][x] * idctTable[v][y]
-				}
-			}
-			res[x][y] = float32(0.25 * sum)
-		}
-	}
-	return res
-}
-
 // Проверка в диапазоне 0-255
 func Clamp255(val int) byte {
 	min := 0
@@ -265,31 +173,22 @@ func Clamp255(val int) byte {
 }
 
 // Декодирование data unit
-func decodeDataUnit(elemID byte) [][]float32 {
-	temp := make([]int16, dataUnitRowCount*dataUnitColCount)
-	temp[0] = decodeDC(elemID, dcTables[comps[elemID].dcTableID])
-	decodeAC(temp, acTables[comps[elemID].acTableID])
-	dequant(temp, quantTables[comps[elemID].quantTableID])
-	// printUnit(temp)
-	matrix := zigZag(temp)
-	t := inverseCosin(matrix)
-	// printCos(t)
-
-	return t
+func decodeDataUnit(channel byte) []int16 {
+	temp := make([]int16, UnitRowCount*UnitColCount)
+	temp[0] = decodeDC(channel, dcTables[comps[channel].dcTableID])
+	decodeAC(temp, acTables[comps[channel].acTableID])
+	return temp
 }
 
-// Перевод изображения в RGB
-func toRGB(img [][]yCbCr) [][]rgb {
-	res := createEmptyImage(uint16(len(img)), uint16(len(img[0])))
+// Перевод изображения в RGB (позже удалить)
+func toRGB(img yCbCrMatrix) [][]rgb {
+	res := createRGBMatrix(uint16(len(img)), uint16(len(img[0])))
 
 	var width byte
 	var height byte
 	if isProgressive {
-		width = blockWidth
-		height = blockHeight
-	} else {
-		width = byte(mcuWidth)
-		height = byte(mcuHeight)
+		width = UnitColCount
+		height = UnitRowCount
 	}
 
 	for i := range height {
@@ -308,52 +207,30 @@ func toRGB(img [][]yCbCr) [][]rgb {
 			// }
 		}
 	}
-	// log.Fatal()
-
 	return res
 }
 
-// Декодирование одного MCU
-func decodeMCU() [][]yCbCr {
-	img := createEmptyMCU(mcuHeight, mcuWidth)
-	//Для каждой компоненты
+// Декодирование блока MCU
+// x y координаты левого верхнего MCU в блоке
+func decodeBlock(blocks [][]MCU, x uint16, y uint16) {
 	for i := range numOfComps {
-		var xPadding byte //Отступ в текущем MCU по x
-		var yPadding byte //Отступ в текущем MCU по y
-		//Для каждого data unit в компоненте
-		for k := range dataUnitByComp[i] {
-			scalingX := maxV / comps[i].v //Растяжение по высоте
-			scalingY := maxH / comps[i].h //Растяжение по ширине
-			unit := decodeDataUnit(i)
-			//Копирование data unit в MCU с растяжением и сдвигом
-			for x := xPadding; x < xPadding+dataUnitRowCount*scalingX; x++ {
-				for y := yPadding; y < yPadding+dataUnitColCount*scalingY; y++ {
-					mcuI := x % (dataUnitRowCount * scalingX) //Координаты в текущем data unit высота
-					mcuJ := y % (dataUnitColCount * scalingY) //Координаты в текущем data unit ширина
-					//В зависимости от компоненты записываем результат в разные поля
-					switch i {
-					case 0:
-						img[x][y].y = unit[mcuI/scalingX][mcuJ/scalingY]
-					case 1:
-						img[x][y].cb = unit[mcuI/scalingX][mcuJ/scalingY]
-					case 2:
-						img[x][y].cr = unit[mcuI/scalingX][mcuJ/scalingY]
-					}
+		if !comps[i].used {
+			continue
+		}
+
+		for curV := range uint16(comps[i].v) {
+			for curH := range uint16(comps[i].h) {
+				switch i {
+				case byte(Y):
+					blocks[x+curV][y+curH].Y = decodeDataUnit(i)
+				case byte(Cb):
+					blocks[x+curV][y+curH].Cb = decodeDataUnit(i)
+				case byte(Cr):
+					blocks[x+curV][y+curH].Cr = decodeDataUnit(i)
 				}
 			}
-
-			//Вычисление сдвига текущего data unit при записи в MCU
-			if (k+1)%(comps[i].h) != 0 {
-				yPadding += dataUnitRowCount
-			} else {
-				yPadding = 0
-				xPadding += dataUnitColCount
-			}
-
-			// 	log.Fatalf("decodeMCU -> incorrect (h.v) values(%d.%d)", comps[i].h, comps[i].v)
 		}
 	}
-	return img
 }
 
 // Выполнение рестарта дельта кодирвоания
@@ -372,59 +249,121 @@ func makeRestart() bool {
 }
 
 // Baseline
-// Декодирование скана, img - прочитанное к моменту вызова функции изображение
-func decodeScan(img [][]rgb) [][]rgb {
+// Декодирование скана, blocks - ссылка на прочитанное к моменту вызова функции изображение
+func decodeBaselineScan(blocks [][]MCU) {
 	decodeInit()
-	var mcuCount uint //Общее количество прочитанных mcu
-	var row uint16    //Счетчик строк MCU
-	var col uint16    //Счетчик столбцов MCU
-	var i uint16      //Счетчик пикселей в изображении по ширине
-	var j uint16      //Счетчик пикселей в изображении по высоте
-	// Для каждого MCU в изображении
-	for row = 0; row < numOfMcuHeight; row++ {
-		for col = 0; col < numOfMcuWidth; col++ {
-			//Декодировать его и преобразовать в RGB
-			mcu := toRGB(decodeMCU())
-			for i = row * mcuHeight; i < mcuHeight*(row+1) && i < imageHeight; i++ {
-				for j = col * mcuWidth; j < mcuWidth*(col+1) && j < imageWidth; j++ {
-					mcuI := i % mcuWidth        //Счетчик пикселей в MCU по ширине
-					mcuJ := j % mcuHeight       //Счетчик пикселей в MCU по высоте
-					img[i][j] = mcu[mcuI][mcuJ] //Копирование в результирующее изображение
-				}
-			}
-			mcuCount++
-			if restartInterval != 0 && mcuCount%uint(restartInterval) == 0 && !makeRestart() {
+	var blockCount uint //Общее количество прочитанных блоков mcu
+	var row uint16      //Счетчик строк блоков MCU
+	var col uint16      //Счетчик столбцов блоков MCU
+	numBlocksHeight := NumOfMCUHeight / uint16(maxV)
+	numBlocksWidth := NumOfMCUWidth / uint16(maxH)
+
+	for row = range numBlocksHeight {
+		for col = range numBlocksWidth {
+			decodeBlock(blocks, row*uint16(maxV), col*uint16(maxH))
+			blockCount++
+			if restartInterval != 0 && blockCount%uint(restartInterval) == 0 && !makeRestart() {
 				log.Fatal("makeRestart wrong marker")
 			}
 		}
 	}
-	return img
 }
 
-// Вычисление преобразований после чтения всех частей прогрессива
-// Проводятся деквантование, зиг-заг и ОДКП преобразования
-func progressiveCalc(img [][]block) [][]rgb {
-	res := createEmptyImage(imageHeight, imageWidth)
+// Вычисление YCbCr для канала ch
+// x y - координаты левого верхнего MCU в блоке
+func componentCalc(blocks [][]MCU, x uint, y uint, res [][]yCbCrMatrix, ch Channel) {
+	// Перевод в YCbCr
+	for curV := range uint16(comps[ch].v) {
+		for curH := range uint16(comps[ch].h) {
+			curMCU := blocks[x+uint(curV)][y+uint(curH)]
+			scalingX := maxV / comps[ch].v
+			scalingY := maxH / comps[ch].h
 
-	for row := range numOfBlocksHeight {
-		for col := range numOfBlocksWidth {
-			mcu := img[row][col].toRGB(quantTables[comps[0].quantTableID], quantTables[comps[1].quantTableID], quantTables[comps[2].quantTableID])
+			curMCU.Dequant(quantTables[comps[ch].quantTableID], ch)
+			unit := curMCU.InverseCosin(ch)
 
-			//Копирование в результирующее изображение
-			for i := row * blockHeight; i < blockHeight*(row+1) && i < imageHeight; i++ {
-				for j := col * blockWidth; j < blockWidth*(col+1) && j < imageWidth; j++ {
-					mcuI := i % blockWidth  //Счетчик пикселей в MCU по ширине
-					mcuJ := j % blockHeight //Счетчик пикселей в MCU по высоте
-					res[i][j] = mcu[mcuI][mcuJ]
+			//chroma subsample
+			var vPadding uint16 //Отступ в текущем MCU по x
+			var hPadding uint16 //Отступ в текущем MCU по y
+			for x := range UnitRowCount * scalingX {
+				vPadding = uint16(x / UnitRowCount)
+
+				for y := range UnitColCount * scalingY {
+					hPadding = uint16(y / UnitColCount)
+
+					switch ch {
+					case Y:
+						res[curV+vPadding][curH+hPadding][x%UnitRowCount][y%UnitColCount].y = unit[x/scalingX][y/scalingY]
+					case Cb:
+						res[curV+vPadding][curH+hPadding][x%UnitRowCount][y%UnitColCount].cb = unit[x/scalingX][y/scalingY]
+					case Cr:
+						res[curV+vPadding][curH+hPadding][x%UnitRowCount][y%UnitColCount].cr = unit[x/scalingX][y/scalingY]
+					}
 				}
 			}
 		}
 	}
-	return res
+}
+
+// Копирование в результат информации из блока YCbCrMatrix
+// x y - координаты левого верхнего угла блока в результате
+func copyToRes(curMatrix yCbCrMatrix, res [][]rgb, x int, y int) {
+	for i := 0; i < len(curMatrix) && x+i < int(imageHeight); i++ {
+		for j := 0; j < len(curMatrix[0]) && y+j < int(imageWidth); j++ {
+			curMatrix[i][j].toRGB(&res[x+i][y+j])
+		}
+	}
+}
+
+// Вычисления над прочитанными данными
+func rgbCalc(blocks [][]MCU) {
+	numBlocksHeight := int(NumOfMCUHeight) / int(maxV)
+	numBlocksWidth := int(NumOfMCUWidth) / int(maxH)
+
+	for row := range numBlocksHeight {
+		for col := range numBlocksWidth {
+			mcuRow := row * int(maxV) // Номер текущего MCU
+			mcuCol := col * int(maxH) // Номер текущего MCU
+
+			curBlock := createYCbCrBlock(maxV, maxH)
+
+			for c := range numOfComps {
+				componentCalc(blocks, uint(mcuRow), uint(mcuCol), curBlock, Channel(c))
+			}
+
+			for i := range int(maxV) {
+				for j := range int(maxH) {
+					copyToRes(curBlock[i][j], img, mcuRow*UnitRowCount+i*UnitRowCount, mcuCol*UnitColCount+j*UnitColCount)
+				}
+			}
+		}
+	}
+}
+
+// Вычисление преобразований после чтения всех частей прогрессива
+// Проводятся деквантование, зиг-заг и ОДКП преобразования
+func progressiveCalc(img1 [][]MCU) {
+	res := createRGBMatrix(imageHeight, imageWidth)
+
+	for row := range NumOfMCUHeight {
+		for col := range NumOfMCUWidth {
+			// mcu := img1[row][col].toRGB(quantTables[comps[0].quantTableID], quantTables[comps[1].quantTableID], quantTables[comps[2].quantTableID])
+
+			//Копирование в результирующее изображение
+			for i := row * UnitRowCount; i < UnitRowCount*(row+1) && i < imageHeight; i++ {
+				for j := col * UnitColCount; j < UnitColCount*(col+1) && j < imageWidth; j++ {
+					// mcuI := i % UnitColCount //Счетчик пикселей в MCU по ширине
+					// mcuJ := j % UnitRowCount //Счетчик пикселей в MCU по высоте
+					// res[i][j] = mcu[mcuI][mcuJ]
+				}
+			}
+		}
+	}
+	img = res
 }
 
 // Декодирование скана, blocks - изображение разбитое на блоки(передается по ссылке от скана к скану)
-func decodeProgScan(blocks [][]block) {
+func decodeProgScan(blocks [][]MCU) {
 	decodeInit()
 
 	var blockCount uint16
@@ -434,8 +373,8 @@ func decodeProgScan(blocks [][]block) {
 	if true && endSpectral != 5 && startSpectral != 6 {
 		//Поблочное чтение со сдвигом на subsampling
 		//Например, maxH:2<->maxV:2 будут читаться блоками 2х2
-		for row := uint16(0); row < numOfBlocksHeight; row += uint16(maxV) {
-			for col := uint16(0); col < numOfBlocksWidth; col += uint16(maxH) {
+		for row := uint16(0); row < NumOfMCUHeight; row += uint16(maxV) {
+			for col := uint16(0); col < NumOfMCUWidth; col += uint16(maxH) {
 				for i := range comps {
 					if !comps[i].used {
 						continue
@@ -446,8 +385,8 @@ func decodeProgScan(blocks [][]block) {
 					var bit byte
 					temp := make([]int16, 64)
 
-					for xPadding := uint16(0); xPadding < uint16(maxV) && (row+xPadding) < numOfBlocksHeight; xPadding++ {
-						for yPadding := uint16(0); yPadding < uint16(maxH) && (col+yPadding) < numOfBlocksWidth; yPadding++ {
+					for xPadding := uint16(0); xPadding < uint16(maxV) && (row+xPadding) < NumOfMCUHeight; xPadding++ {
+						for yPadding := uint16(0); yPadding < uint16(maxH) && (col+yPadding) < NumOfMCUWidth; yPadding++ {
 							if startSpectral == 0 && approxH == 0 { //Первое чтение DC=======================
 								if readed < dataUnitByComp[i] {
 									value = decodeDC(byte(i), dcTables[comps[i].dcTableID]) << int16(approxL)
@@ -502,8 +441,8 @@ func decodeProgScan(blocks [][]block) {
 	}
 
 	//Для каждого блока (для AC)
-	for row := range numOfBlocksHeight {
-		for col := range numOfBlocksWidth {
+	for row := range NumOfMCUHeight {
+		for col := range NumOfMCUWidth {
 			blockCount++
 
 			//Для каждой цветовой компоненты
@@ -541,7 +480,7 @@ func decodeProgScan(blocks [][]block) {
 					}
 
 					// Если не нужно пропускать диапазоны
-					if skips == 0 {
+					if bandSkips == 0 {
 						for ; k <= endSpectral; k++ {
 							sym := acTables[comps[i].acTableID].DecodeHuff(reader)
 
@@ -558,8 +497,8 @@ func decodeProgScan(blocks [][]block) {
 								}
 							} else { //low == 0
 								if high != 15 {
-									skips = 1 << high
-									skips += reader.GetBits(high)
+									bandSkips = 1 << high
+									bandSkips += reader.GetBits(high)
 									break
 								}
 							}
@@ -607,7 +546,7 @@ func decodeProgScan(blocks [][]block) {
 								}
 							}
 						}
-						skips -= 1
+						bandSkips -= 1
 					}
 				}
 			}

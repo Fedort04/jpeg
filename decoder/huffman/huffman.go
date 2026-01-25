@@ -1,9 +1,9 @@
 package huffman
 
 import (
-	binreader "decoder/binReader"
 	"errors"
 	"fmt"
+	binreader "jpeg/decoder/binReader"
 	"log"
 )
 

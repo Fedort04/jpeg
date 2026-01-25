@@ -1,4 +1,4 @@
-*/pics
-*.jpg
+# */pics
+# *.jpg
 *.bmp
-*.txt
+# *.txt

@@ -16,7 +16,8 @@ const (
 
 type BinReader struct {
 	src      *bufio.Reader //Источник для чтения
-	end      Endian        //Endianness
+	curFile  *os.File
+	end      Endian //Endianness
 	prevByte byte
 	curByte  byte //Текущее значение байта для побитового чтения
 	bitCount byte //Счетчик бит в текущем байте
@@ -29,10 +30,18 @@ func BinReaderInit(source string, end Endian) (*BinReader, error) {
 	if err != nil {
 		return nil, err
 	}
+	reader.curFile = temp
 	reader.src = bufio.NewReader(temp)
-	reader.prevByte = 0
 	reader.end = end
+	reader.prevByte = 0
+	reader.curByte = 0
+	reader.bitCount = 0
 	return &reader, nil
+}
+
+// Деструктор объекта
+func (b *BinReader) Close() error {
+	return b.curFile.Close()
 }
 
 // Изменить endian объекта BinReader
@@ -46,7 +55,7 @@ func (b *BinReader) SetEndian(end Endian) {
 }
 
 // Необходимо вызывать при начале побитового чтения
-func (b *BinReader) UpdateBitRead() {
+func (b *BinReader) BitReadInit() {
 	b.bitCount = 0
 }
 
