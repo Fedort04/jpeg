@@ -15,12 +15,12 @@ const (
 )
 
 type BinReader struct {
-	src      *bufio.Reader //Источник для чтения
-	curFile  *os.File
-	end      Endian //Endianness
-	prevByte byte
-	curByte  byte //Текущее значение байта для побитового чтения
-	bitCount byte //Счетчик бит в текущем байте
+	src          *bufio.Reader //Источник для чтения
+	curFile      *os.File
+	end          Endian //Endianness
+	isHuffStream bool   //Флаг вычисления битового потока (для пропуска нулей в 0xFF-0x00)
+	curByte      byte   //Текущее значение байта для побитового чтения
+	bitCount     byte   //Счетчик бит в текущем байте
 }
 
 // Инициализация объекта BinReader на расположение source
@@ -33,7 +33,7 @@ func BinReaderInit(source string, end Endian) (*BinReader, error) {
 	reader.curFile = temp
 	reader.src = bufio.NewReader(temp)
 	reader.end = end
-	reader.prevByte = 0
+	reader.isHuffStream = false
 	reader.curByte = 0
 	reader.bitCount = 0
 	return &reader, nil
@@ -54,9 +54,15 @@ func (b *BinReader) SetEndian(end Endian) {
 	}
 }
 
-// Необходимо вызывать при начале побитового чтения
-func (b *BinReader) BitReadInit() {
+// Запуск чтения Хаффмана
+func (b *BinReader) HuffStreamStart() {
 	b.bitCount = 0
+	b.isHuffStream = true
+}
+
+// Отключение чтения Хаффмана
+func (b *BinReader) HuffStreamEnd() {
+	b.isHuffStream = false
 }
 
 // Чтение одного байта
@@ -65,6 +71,15 @@ func (b *BinReader) GetByte() byte {
 	if err != nil {
 		log.Panic(err.Error())
 	}
+
+	if b.isHuffStream && b.curByte == 0xFF && ans == 0x00 {
+		ans, err = b.src.ReadByte()
+		if err != nil {
+			log.Panic(err.Error())
+		}
+	}
+
+	b.curByte = ans
 	return ans
 }
 
@@ -102,21 +117,15 @@ func (b *BinReader) Get4Bit() (byte, byte) {
 func (b *BinReader) GetBit() byte {
 	if b.end == BIG {
 		if b.bitCount == 0 {
-			b.prevByte = b.curByte
-			b.curByte = b.GetByte()
+			b.GetByte()
 			b.bitCount = 8
-		}
-		//Если предыдущий байт был 0xFF, а текущий 0x00, то пропускаем нули
-		if b.prevByte == 0xFF && b.curByte == 0x00 {
-			b.prevByte = 0
-			b.curByte = b.GetByte()
 		}
 		b.bitCount--
 		temp := b.curByte >> b.bitCount
 		return temp & 1
 	} else {
 		if b.bitCount == 8 {
-			b.curByte = b.GetByte()
+			b.GetByte()
 			b.bitCount = 0
 		}
 		temp := b.curByte >> b.bitCount
@@ -140,8 +149,7 @@ func (b *BinReader) GetBits(n byte) uint16 {
 
 // Пропуск оставшихся бит в байте
 func (b *BinReader) BitsAlign() {
-	b.prevByte = b.curByte
-	b.curByte = b.GetByte()
+	b.GetByte()
 	if b.end == BIG {
 		b.bitCount = 8
 	} else {

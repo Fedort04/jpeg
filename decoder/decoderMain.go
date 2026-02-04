@@ -57,10 +57,15 @@ var comps [maxComps]component                //Массив с данными о
 var restartInterval uint16                   //Интервал перезапуска дельта кодирования
 var startSpectral byte                       //Начало spectral selection для текущего скана
 var endSpectral byte                         //Конец spectral selection для текущего скана
-var approxH byte                             //Предыдущий бит для аппроксимации компоненты для текущего скана
-var approxL byte                             //Текущий бит для аппроксимации компоненты для текущего скана
+var saHigh byte                              //Предыдущий бит для аппроксимации компоненты для текущего скана
+var saLow byte                               //Текущий бит для аппроксимации компоненты для текущего скана
 
 var img [][]rgb //Результирующее изображение
+
+// Инит переменных
+func decoderInit() {
+	restartInterval = 0
+}
 
 // Чтение маркера marker
 func readMarker(marker uint16) bool {
@@ -77,7 +82,6 @@ func readApp() {
 
 	if withDump {
 		log.Print("APP")
-		// log.Println("APP", string(temp))
 	}
 }
 
@@ -203,7 +207,11 @@ func readScanHeader() {
 	}
 	startSpectral = reader.GetByte()
 	endSpectral = reader.GetByte()
-	approxH, approxL = reader.Get4Bit()
+	if startSpectral > endSpectral || endSpectral > 63 {
+		log.Printf("spectralSelection params error: start: %d\tend: %d", startSpectral, endSpectral)
+		return
+	}
+	saHigh, saLow = reader.Get4Bit()
 
 	if withDump {
 		log.Print("SOS")
@@ -214,7 +222,7 @@ func readScanHeader() {
 		}
 		log.Print("start Spectral Selection: ", startSpectral)
 		log.Print("end Spectral Selection: ", endSpectral)
-		log.Print("approximation high: ", approxH, "; approximation low: ", approxL)
+		log.Print("approximation high: ", saHigh, "; approximation low: ", saLow)
 	}
 }
 
@@ -255,24 +263,19 @@ func readFrameHeader() {
 func readScans() {
 	blocks := CreateMCUMatrix(NumOfMCUHeight, NumOfMCUWidth)
 	if isProgressive { //Считает в цикле все сканы, а в конце проводит вычисления по функции и возвращает уже ргб
-		for range 4 {
+		for {
 			nextMarker := readTables()
 			if nextMarker == EOI {
-				wasEOI = true
 				break
 			} else if nextMarker != SOS {
 				log.Fatalf("readFrame can't read SOS\nMarker: %x", nextMarker)
 			}
-
-			// log.Printf("Scan %d!!!!!!!!!!!!!", i+1)
 			readScanHeader()
-			decodeProgScan(blocks)
+			decodeProgressiveScan(blocks)
 			if reader.GetNextByte() != 0xFF {
 				reader.BitsAlign()
 			}
 		}
-		progressiveCalc(blocks)
-
 	} else { //Для Baseline
 		nextMarker := readTables()
 		if nextMarker != SOS {
@@ -280,8 +283,8 @@ func readScans() {
 		}
 		readScanHeader()
 		decodeBaselineScan(blocks)
-		rgbCalc(blocks)
 	}
+	rgbCalc(blocks)
 }
 
 // Чтение кадра
@@ -319,11 +322,12 @@ func ReadJPEG(source string, dump bool) [][]rgb {
 			log.Fatal(err.Error())
 		}
 	}()
-
 	if err != nil {
 		log.Println("BinReaderInit -> Error")
 		log.Fatal(err.Error())
 	}
+
+	decoderInit()
 
 	if !readMarker(SOI) {
 		log.Fatal("Can't read SOI marker")
@@ -334,10 +338,6 @@ func ReadJPEG(source string, dump bool) [][]rgb {
 	}
 
 	readFrame()
-
-	// if !wasEOI && !readMarker(EOI) {
-	// 	log.Fatal("Can't read EOI marker")
-	// }
 
 	if withDump {
 		log.Print("EOI")
@@ -401,7 +401,7 @@ func ReadBaseline(path string) {
 		return
 	}
 
-	img := ReadJPEG(path, true)
+	img := ReadJPEG(path, false)
 	log.Print("READ SUCCESS")
 	encodeBMP(img, res)
 	log.Print("BMP SUCCESS")
@@ -414,22 +414,8 @@ func ReadProgressive(path string) {
 		return
 	}
 
-	img := ReadJPEG(path, true)
+	img := ReadJPEG(path, false)
 	log.Print("READ SUCCESS")
 	encodeBMP(img, res)
 	log.Print("BMP SUCCESS")
 }
-
-// func main() {
-// 	// img := ReadJPEG("pics/Baseline/Aqours.jpg", true)
-// 	// img := ReadJPEG("pics/Progressive/AqoursProgressive.jpeg", true)
-// 	img := ReadJPEG("pics/Progressive/EikyuuHours.jpeg", true)
-// 	// img := ReadJPEG("pics/Progressive/EikyuuStage.jpeg", true)
-
-// 	log.Print("READ SUCCESS")
-// 	// encodeBMP(img, "pics/Baseline/Aqours.bmp")
-// 	// encodeBMP(img, "pics/Progressive/AqoursProgressive.bmp")
-// 	encodeBMP(img, "pics/Progressive/EikyuuHours.bmp")
-// 	// encodeBMP(img, "pics/Progressive/EikyuuStage.bmp")
-// 	log.Print("BMP SUCCESS")
-// }

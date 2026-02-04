@@ -12,7 +12,7 @@
             "mode": "auto",
             "program": "${workspaceFolder}",
             "args": [
-                "-o", "output.log"
+                "decoder/pics/Progressive/EikyuuStage.jpeg"
             ]
         }
 

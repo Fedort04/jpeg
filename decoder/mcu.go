@@ -133,26 +133,3 @@ func (unit *MCU) InverseCosin(ch Channel) [][]float32 {
 		return nil
 	}
 }
-
-// Перевод блока в RGB c проведением деквантования, ОДКП
-// func (b *MCU) toRGB(quantTableL []byte, quantTableCb []byte, quantTableCr []byte) [][]rgb {
-// 	// dequant(b.Y, quantTableL)
-// 	// dequant(b.Cb, quantTableCb)
-// 	// dequant(b.Cr, quantTableCr)
-
-// 	y := idctCalc(zigZag(b.Y))
-// 	cb := idctCalc(zigZag(b.Cb))
-// 	cr := idctCalc(zigZag(b.Cr))
-
-// 	lum := createYCbCrBlock(byte(UnitRowCount), byte(UnitColCount))
-// 	//Копирование в структуру YCbCr
-// 	for i := range UnitRowCount {
-// 		for j := range UnitColCount {
-// 			lum[i][j].y = y[i][j]
-// 			lum[i][j].cb = cb[i][j]
-// 			lum[i][j].cr = cr[i][j]
-// 		}
-// 	}
-
-// 	return toRGB(lum)
-// }

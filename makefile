@@ -1,6 +1,6 @@
 all:
-	go run main.go
-	eog decoder/pics/Baseline/Aqours.bmp&
+	go run main.go decoder/pics/Baseline/Aida.jpg decoder/pics/Progressive/EikyuuHours.jpeg
+	eog decoder/pics/Baseline/Aida.bmp&
 	eog decoder/pics/Progressive/EikyuuHours.bmp&
 
 Baseline:
@@ -10,7 +10,11 @@ Baseline:
 	eog decoder/pics/Baseline/Suwa.bmp&
 
 Progressive:
-	go run main.go decoder/pics/Progressive/AqoursProgressive.jpeg
+	go run main.go decoder/pics/Progressive/AqoursProgressive.jpeg decoder/pics/Progressive/EikyuuHours.jpeg decoder/pics/Progressive/EikyuuStage.jpeg
 	eog decoder/pics/Progressive/AqoursProgressive.bmp&
+	eog decoder/pics/Progressive/EikyuuHours.bmp&
+	eog decoder/pics/Progressive/EikyuuStage.bmp&
 
-# 	eog decoder/pics/Progressive/EikyuuHours.bmp&
+ProgressiveChroma:
+	go run main.go decoder/pics/Progressive/EikyuuHours.jpeg
+	eog decoder/pics/Progressive/EikyuuHours.bmp&
