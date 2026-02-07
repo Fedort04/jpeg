@@ -8,6 +8,7 @@ import (
 
 const rgbDelta = 128 //Константа, которая прибавляется при переводе в RGB
 
+type Image = [][]Rgb
 type yCbCrMatrix = [][]yCbCr
 
 // Структура для хранения данных в YCbCr формате
@@ -18,20 +19,20 @@ type yCbCr struct {
 }
 
 // Перевод в RGB пространство по указателю
-func (cur *yCbCr) toRGB(res *rgb) {
+func (cur *yCbCr) toRGB(res *Rgb) {
 	cur.y += rgbDelta
 	cur.cb += rgbDelta
 	cur.cr += rgbDelta
-	res.r = Clamp255(int(math.Round(float64(cur.y) + 1.402*float64((float64(cur.cr)-rgbDelta)))))
-	res.g = Clamp255(int(math.Round(float64(cur.y) - 0.34414*float64((float64(cur.cb)-rgbDelta)) - 0.71414*float64((float64(cur.cr)-rgbDelta)))))
-	res.b = Clamp255(int(math.Round(float64(cur.y) + 1.772*float64((float64(cur.cb)-rgbDelta)))))
+	res.R = Clamp255(int(math.Round(float64(cur.y) + 1.402*float64((float64(cur.cr)-rgbDelta)))))
+	res.G = Clamp255(int(math.Round(float64(cur.y) - 0.34414*float64((float64(cur.cb)-rgbDelta)) - 0.71414*float64((float64(cur.cr)-rgbDelta)))))
+	res.B = Clamp255(int(math.Round(float64(cur.y) + 1.772*float64((float64(cur.cb)-rgbDelta)))))
 }
 
 // Структура для хранения данных в RGB формате
-type rgb struct {
-	r byte
-	g byte
-	b byte
+type Rgb struct {
+	R byte
+	G byte
+	B byte
 }
 
 var bandSkips uint16 //Счетчик пропусков вычислений в progressive
@@ -42,10 +43,10 @@ var positiveBit int16
 var negativeBit int16
 
 // Создание пустого изображения RGB
-func createRGBMatrix(height uint16, width uint16) [][]rgb {
-	res := make([][]rgb, height)
+func createRGBMatrix(height uint16, width uint16) [][]Rgb {
+	res := make([][]Rgb, height)
 	for i := range height {
-		res[i] = make([]rgb, width)
+		res[i] = make([]Rgb, width)
 	}
 	return res
 }
@@ -65,34 +66,34 @@ func createYCbCrBlock(height byte, width byte) [][]yCbCrMatrix {
 	for i := range height {
 		res[i] = make([]yCbCrMatrix, width)
 		for j := range width {
-			res[i][j] = createYCbCrMatrix(UnitRowCount, UnitColCount)
+			res[i][j] = createYCbCrMatrix(unitRowCount, unitColCount)
 		}
 	}
 	return res
 }
 
 // Вычисление тех переменных, которые нужны при сканах, но вычисляются единожды
-func unitsInit() {
-	NumOfMCUHeight = (imageHeight + (UnitRowCount - 1)) / (UnitRowCount)
-	NumOfMCUHeight += NumOfMCUHeight % uint16(maxV)
+func (jpeg *JPEG) unitsInit() {
+	jpeg.numOfMCUHeight = (jpeg.ImageHeight + (unitRowCount - 1)) / (unitRowCount)
+	jpeg.numOfMCUHeight += jpeg.numOfMCUHeight % uint16(jpeg.maxV)
 
-	NumOfMCUWidth = (imageWidth + (UnitColCount - 1)) / (UnitColCount)
-	NumOfMCUWidth += NumOfMCUWidth % uint16(maxH)
+	jpeg.numOfMCUWidth = (jpeg.ImageWidth + (unitColCount - 1)) / (unitColCount)
+	jpeg.numOfMCUWidth += jpeg.numOfMCUWidth % uint16(jpeg.maxH)
 }
 
 // Инициализация дельта-декодирования, перезапуск bands, инициализация побитового чтения
-func decodeInit() {
-	prev = make([]int16, numOfComps)
+func (jpeg *JPEG) decodeInit() {
+	prev = make([]int16, jpeg.numOfComps)
 	bandSkips = 0
-	positiveBit = int16(1 << saLow)
+	positiveBit = int16(1 << jpeg.saLow)
 	temp := -1
-	negativeBit = int16(uint(temp) << uint(saLow))
-	reader.HuffStreamStart()
+	negativeBit = int16(uint(temp) << uint(jpeg.saLow))
+	jpeg.reader.HuffStreamStart()
 }
 
 // Сброс дельта-кодирования
-func restart() {
-	prev = make([]int16, numOfComps)
+func (jpeg *JPEG) restart() {
+	prev = make([]int16, jpeg.numOfComps)
 	bandSkips = 0
 }
 
@@ -106,40 +107,32 @@ func decodeSign(num int16, len byte) int16 {
 }
 
 // Декодирование DC элемента
-func decodeDC(id int, huff *huffman.HuffTable) int16 {
-	temp := huff.DecodeHuff(reader)
-	diff := decodeSign(int16(reader.GetBits(byte(temp))), byte(temp))
+func (jpeg *JPEG) decodeDC(id int, huff *huffman.HuffTable) int16 {
+	temp := huff.DecodeHuff(jpeg.reader)
+	diff := decodeSign(int16(jpeg.reader.GetBits(byte(temp))), byte(temp))
 	res := diff + prev[id]
 	prev[id] = res
 	return res
 }
 
-// Декодирование символа EOB
-func decodeEndOfBand(count byte) uint16 {
-	var ans uint16
-	ans = 1 << count
-	ans += reader.GetBits(count)
-	return ans
-}
-
 // Декодирование AC элемента
-func decodeAC(unit []int16, huff *huffman.HuffTable) {
+func (jpeg *JPEG) decodeAC(unit []int16, huff *huffman.HuffTable) {
 	if bandSkips > 0 {
 		bandSkips--
 		return
 	}
 
-	unitLen := endSpectral
+	unitLen := jpeg.endSpectral
 
 	var k byte
-	if isProgressive {
-		k = startSpectral
+	if jpeg.IsProgressive {
+		k = jpeg.startSpectral
 	} else {
 		k = 1
 	}
 
 	for ; k <= unitLen; k++ {
-		rs := huff.DecodeHuff(reader)
+		rs := huff.DecodeHuff(jpeg.reader)
 		big := byte(rs >> 4)
 		small := byte(rs & 0x0f)
 
@@ -149,7 +142,7 @@ func decodeAC(unit []int16, huff *huffman.HuffTable) {
 
 		if small == 0 {
 			if big != 15 {
-				bandSkips = decodeEndOfBand(big)
+				bandSkips = jpeg.reader.DecodeEndOfBand(big)
 				bandSkips--
 				break
 			} else {
@@ -161,8 +154,8 @@ func decodeAC(unit []int16, huff *huffman.HuffTable) {
 			if k > unitLen {
 				log.Fatalf("decodeAC -> error: k(%d) bigger than unit length(%d)", k, unitLen)
 			}
-			bits := reader.GetBits(small)
-			unit[k] = decodeSign(int16(bits), small) << int16(saLow)
+			bits := jpeg.reader.GetBits(small)
+			unit[k] = decodeSign(int16(bits), small) << int16(jpeg.saLow)
 		}
 	}
 }
@@ -181,31 +174,31 @@ func Clamp255(val int) byte {
 }
 
 // Декодирование data unit
-func decodeDataUnit(channel int) []int16 {
-	temp := make([]int16, UnitRowCount*UnitColCount)
-	temp[0] = decodeDC(channel, dcTables[comps[channel].dcTableID])
-	decodeAC(temp, acTables[comps[channel].acTableID])
+func (jpeg *JPEG) decodeDataUnit(channel int) []int16 {
+	temp := make([]int16, unitRowCount*unitColCount)
+	temp[0] = jpeg.decodeDC(channel, jpeg.dcTables[jpeg.comps[channel].dcTableID])
+	jpeg.decodeAC(temp, jpeg.acTables[jpeg.comps[channel].acTableID])
 	return temp
 }
 
 // Выполнение рестарта дельта кодирвоания
-func makeRestart() bool {
-	marker := reader.GetWord()
+func (jpeg *JPEG) makeRestart() bool {
+	marker := jpeg.reader.GetWord()
 	if marker == EOI {
 		return true
 	} else if marker >= RST0 && marker <= RST7 {
-		reader.BitsAlign()
-		restart()
+		jpeg.reader.BitsAlign()
+		jpeg.restart()
 		return true
 	}
-	log.Printf("marker: %x, nextByte: %d", marker, reader.GetNextByte())
+	log.Printf("marker: %x, nextByte: %d", marker, jpeg.reader.GetNextByte())
 	return false
 }
 
 // Декодирование блока MCU Baseline
 // x y координаты левого верхнего MCU в блоке
-func decodeBaselineBlock(mcus [][]MCU, x uint16, y uint16) {
-	for i, comp := range comps {
+func (jpeg *JPEG) decodeBaselineBlock(mcus [][]MCU, x uint16, y uint16) {
+	for i, comp := range jpeg.comps {
 		if !comp.used {
 			continue
 		}
@@ -214,11 +207,11 @@ func decodeBaselineBlock(mcus [][]MCU, x uint16, y uint16) {
 			for curH := range uint16(comp.h) {
 				switch i {
 				case int(Y):
-					mcus[x+curV][y+curH].Y = decodeDataUnit(i)
+					mcus[x+curV][y+curH].Y = jpeg.decodeDataUnit(i)
 				case int(Cb):
-					mcus[x+curV][y+curH].Cb = decodeDataUnit(i)
+					mcus[x+curV][y+curH].Cb = jpeg.decodeDataUnit(i)
 				case int(Cr):
-					mcus[x+curV][y+curH].Cr = decodeDataUnit(i)
+					mcus[x+curV][y+curH].Cr = jpeg.decodeDataUnit(i)
 				}
 			}
 		}
@@ -227,21 +220,21 @@ func decodeBaselineBlock(mcus [][]MCU, x uint16, y uint16) {
 
 // Baseline
 // Декодирование скана, blocks - ссылка на прочитанное к моменту вызова функции изображение
-func decodeBaselineScan(mcus [][]MCU) {
-	decodeInit()
-	defer reader.HuffStreamEnd()
+func (jpeg *JPEG) decodeBaselineScan(mcus [][]MCU) {
+	jpeg.decodeInit()
+	defer jpeg.reader.HuffStreamEnd()
 
 	var blockCount uint //Общее количество прочитанных блоков mcu
 	var row uint16      //Счетчик строк блоков MCU
 	var col uint16      //Счетчик столбцов блоков MCU
-	numBlocksHeight := NumOfMCUHeight / uint16(maxV)
-	numBlocksWidth := NumOfMCUWidth / uint16(maxH)
+	numBlocksHeight := jpeg.numOfMCUHeight / uint16(jpeg.maxV)
+	numBlocksWidth := jpeg.numOfMCUWidth / uint16(jpeg.maxH)
 
 	for row = range numBlocksHeight {
 		for col = range numBlocksWidth {
-			decodeBaselineBlock(mcus, row*uint16(maxV), col*uint16(maxH))
+			jpeg.decodeBaselineBlock(mcus, row*uint16(jpeg.maxV), col*uint16(jpeg.maxH))
 			blockCount++
-			if restartInterval != 0 && blockCount%uint(restartInterval) == 0 && !makeRestart() {
+			if jpeg.restartInterval != 0 && blockCount%uint(jpeg.restartInterval) == 0 && !jpeg.makeRestart() {
 				log.Fatal("makeRestart wrong marker")
 			}
 		}
@@ -250,7 +243,7 @@ func decodeBaselineScan(mcus [][]MCU) {
 
 // Пропуск нулей при refinement
 // Возвращает индекс следующего за промежутком нуля или endIndex
-func refinementZeroSkip(data []int16, zeros byte, startIndex byte, endIndex byte) byte {
+func (jpeg *JPEG) RefinementZeroSkip(data []int16, zeros byte, startIndex byte, endIndex byte) byte {
 	for k := startIndex; k <= endIndex; k++ {
 		if data[k] == 0 {
 			if zeros == 0 {
@@ -259,11 +252,11 @@ func refinementZeroSkip(data []int16, zeros byte, startIndex byte, endIndex byte
 				zeros--
 			}
 		} else if data[k] > 0 {
-			if reader.GetBit() == 1 {
+			if jpeg.reader.GetBit() == 1 {
 				data[k] |= positiveBit
 			}
 		} else {
-			if reader.GetBit() == 1 {
+			if jpeg.reader.GetBit() == 1 {
 				data[k] += negativeBit
 			}
 		}
@@ -274,32 +267,32 @@ func refinementZeroSkip(data []int16, zeros byte, startIndex byte, endIndex byte
 
 // Декодирование блока MCU Progressive (используется только для DC)
 // x y координаты левого верхнего MCU в блоке
-func decodeProgressiveDC(mcus [][]MCU, x uint16, y uint16) {
-	for i, comp := range comps {
+func (jpeg *JPEG) decodeProgressiveDC(mcus [][]MCU, x uint16, y uint16) {
+	for i, comp := range jpeg.comps {
 		if !comp.used {
 			continue
 		}
 
 		for curV := range uint16(comp.v) {
 			for curH := range uint16(comp.h) {
-				if saHigh == 0 { // Первое чтение DC
+				if jpeg.saHigh == 0 { // Первое чтение DC
 					switch i {
 					case int(Y):
-						mcus[x+curV][y+curH].Y[0] = decodeDC(i, dcTables[comp.dcTableID]) << int16(saLow)
+						mcus[x+curV][y+curH].Y[0] = jpeg.decodeDC(i, jpeg.dcTables[comp.dcTableID]) << int16(jpeg.saLow)
 					case int(Cb):
-						mcus[x+curV][y+curH].Cb[0] = decodeDC(i, dcTables[comp.dcTableID]) << int16(saLow)
+						mcus[x+curV][y+curH].Cb[0] = jpeg.decodeDC(i, jpeg.dcTables[comp.dcTableID]) << int16(jpeg.saLow)
 					case int(Cr):
-						mcus[x+curV][y+curH].Cr[0] = decodeDC(i, dcTables[comp.dcTableID]) << int16(saLow)
+						mcus[x+curV][y+curH].Cr[0] = jpeg.decodeDC(i, jpeg.dcTables[comp.dcTableID]) << int16(jpeg.saLow)
 					}
 				} else { // Повторное чтение DC
-					bit := reader.GetBit()
+					bit := jpeg.reader.GetBit()
 					switch i {
 					case int(Y):
-						mcus[x+curV][y+curH].Y[0] |= int16(bit << saLow)
+						mcus[x+curV][y+curH].Y[0] |= int16(bit << jpeg.saLow)
 					case int(Cb):
-						mcus[x+curV][y+curH].Cb[0] |= int16(bit << saLow)
+						mcus[x+curV][y+curH].Cb[0] |= int16(bit << jpeg.saLow)
 					case int(Cr):
-						mcus[x+curV][y+curH].Cr[0] |= int16(bit << saLow)
+						mcus[x+curV][y+curH].Cr[0] |= int16(bit << jpeg.saLow)
 					}
 				}
 			}
@@ -308,35 +301,35 @@ func decodeProgressiveDC(mcus [][]MCU, x uint16, y uint16) {
 }
 
 // Декодирование сканов AC
-func decodeProgressiveAC(mcus [][]MCU) {
-	for i, comp := range comps {
+func (jpeg *JPEG) decodeProgressiveAC(mcus [][]MCU) {
+	for i, comp := range jpeg.comps {
 		if !comp.used {
 			continue
 		}
 
-		rowCount := int(NumOfMCUHeight)
-		colCount := int(NumOfMCUWidth)
+		rowCount := int(jpeg.numOfMCUHeight)
+		colCount := int(jpeg.numOfMCUWidth)
 
-		if imageHeight%UnitRowCount == 0 {
-			rowCount = int(imageHeight / UnitRowCount)
+		if jpeg.ImageHeight%unitRowCount == 0 {
+			rowCount = int(jpeg.ImageHeight / unitRowCount)
 		}
 
-		if imageWidth%UnitColCount == 0 {
-			colCount = int(imageWidth / UnitColCount)
+		if jpeg.ImageWidth%unitColCount == 0 {
+			colCount = int(jpeg.ImageWidth / unitColCount)
 		}
 
-		rowStep := maxV / comp.v
-		colStep := maxH / comp.h
+		rowStep := jpeg.maxV / comp.v
+		colStep := jpeg.maxH / comp.h
 		for row := 0; row < rowCount; row += int(rowStep) {
 			for col := 0; col < colCount; col += int(colStep) {
-				if saHigh == 0 { // Первое чтение AC
+				if jpeg.saHigh == 0 { // Первое чтение AC
 					switch i {
 					case int(Y):
-						decodeAC(mcus[row][col].Y, acTables[comp.acTableID])
+						jpeg.decodeAC(mcus[row][col].Y, jpeg.acTables[comp.acTableID])
 					case int(Cb):
-						decodeAC(mcus[row][col].Cb, acTables[comp.acTableID])
+						jpeg.decodeAC(mcus[row][col].Cb, jpeg.acTables[comp.acTableID])
 					case int(Cr):
-						decodeAC(mcus[row][col].Cr, acTables[comp.acTableID])
+						jpeg.decodeAC(mcus[row][col].Cr, jpeg.acTables[comp.acTableID])
 					}
 				} else { // Повторное чтение AC
 					var arr []int16 // Указатель на текущий массив цвета
@@ -350,14 +343,14 @@ func decodeProgressiveAC(mcus [][]MCU) {
 					}
 
 					if bandSkips > 0 {
-						refinementZeroSkip(arr, UnitRowCount*UnitColCount, startSpectral, endSpectral)
+						jpeg.RefinementZeroSkip(arr, unitRowCount*unitColCount, jpeg.startSpectral, jpeg.endSpectral)
 						bandSkips--
 						continue
 					}
 
-					for k := startSpectral; k <= endSpectral; k++ {
+					for k := jpeg.startSpectral; k <= jpeg.endSpectral; k++ {
 
-						sym := acTables[comp.acTableID].DecodeHuff(reader)
+						sym := jpeg.acTables[comp.acTableID].DecodeHuff(jpeg.reader)
 						high := byte(sym >> 4)
 						low := byte(sym & 0x0F)
 						coeff := int16(0)
@@ -365,19 +358,19 @@ func decodeProgressiveAC(mcus [][]MCU) {
 						switch low {
 						case 0:
 							if high != 15 {
-								bandSkips = decodeEndOfBand(high)
-								k = refinementZeroSkip(arr, UnitRowCount*UnitColCount, k, endSpectral)
+								bandSkips = jpeg.reader.DecodeEndOfBand(high)
+								k = jpeg.RefinementZeroSkip(arr, unitRowCount*unitColCount, k, jpeg.endSpectral)
 								bandSkips--
 							} else {
-								k = refinementZeroSkip(arr, high, k, endSpectral)
+								k = jpeg.RefinementZeroSkip(arr, high, k, jpeg.endSpectral)
 							}
 						case 1:
-							if reader.GetBit() == 1 {
+							if jpeg.reader.GetBit() == 1 {
 								coeff = positiveBit
 							} else {
 								coeff = negativeBit
 							}
-							k = refinementZeroSkip(arr, high, k, endSpectral)
+							k = jpeg.RefinementZeroSkip(arr, high, k, jpeg.endSpectral)
 							arr[k] = coeff
 						}
 					}
@@ -389,60 +382,60 @@ func decodeProgressiveAC(mcus [][]MCU) {
 
 // Progressive
 // Декодирование одного скана, blocks - ссылка на прочитанное к моменту вызова функции изображение
-func decodeProgressiveScan(mcus [][]MCU) {
-	decodeInit()
-	defer reader.HuffStreamEnd()
+func (jpeg *JPEG) decodeProgressiveScan(mcus [][]MCU) {
+	jpeg.decodeInit()
+	defer jpeg.reader.HuffStreamEnd()
 
 	var blockCount uint //Общее количество прочитанных блоков mcu
 	var row uint16      //Счетчик строк блоков MCU
 	var col uint16      //Счетчик столбцов блоков MCU
-	numBlocksHeight := NumOfMCUHeight / uint16(maxV)
-	numBlocksWidth := NumOfMCUWidth / uint16(maxH)
+	numBlocksHeight := jpeg.numOfMCUHeight / uint16(jpeg.maxV)
+	numBlocksWidth := jpeg.numOfMCUWidth / uint16(jpeg.maxH)
 
-	if startSpectral == 0 && endSpectral == 0 { // Только для DC сканов
+	if jpeg.startSpectral == 0 && jpeg.endSpectral == 0 { // Только для DC сканов
 		for row = range numBlocksHeight {
 			for col = range numBlocksWidth {
-				decodeProgressiveDC(mcus, row*uint16(maxV), col*uint16(maxH))
+				jpeg.decodeProgressiveDC(mcus, row*uint16(jpeg.maxV), col*uint16(jpeg.maxH))
 				blockCount++
-				if restartInterval != 0 && blockCount%uint(restartInterval) == 0 && !makeRestart() {
+				if jpeg.restartInterval != 0 && blockCount%uint(jpeg.restartInterval) == 0 && !jpeg.makeRestart() {
 					log.Fatal("makeRestart wrong marker")
 				}
 			}
 		}
 	} else {
-		decodeProgressiveAC(mcus)
+		jpeg.decodeProgressiveAC(mcus)
 	}
 }
 
 // Вычисление YCbCr для канала ch
 // x y - координаты левого верхнего MCU в блоке
-func componentCalc(blocks [][]MCU, x uint, y uint, res [][]yCbCrMatrix, ch Channel) {
+func (jpeg *JPEG) componentCalc(blocks [][]MCU, x uint, y uint, res [][]yCbCrMatrix, ch Channel) {
 	// Перевод в YCbCr
-	for curV := range uint16(comps[ch].v) {
-		for curH := range uint16(comps[ch].h) {
+	for curV := range uint16(jpeg.comps[ch].v) {
+		for curH := range uint16(jpeg.comps[ch].h) {
 			curMCU := blocks[x+uint(curV)][y+uint(curH)]
-			scalingX := maxV / comps[ch].v
-			scalingY := maxH / comps[ch].h
+			scalingX := jpeg.maxV / jpeg.comps[ch].v
+			scalingY := jpeg.maxH / jpeg.comps[ch].h
 
-			curMCU.Dequant(quantTables[comps[ch].quantTableID], ch)
+			curMCU.Dequant(jpeg.quantTables[jpeg.comps[ch].quantTableID], ch)
 			unit := curMCU.InverseCosin(ch)
 
 			//chroma subsample
 			var vPadding uint16 //Отступ в текущем MCU по x
 			var hPadding uint16 //Отступ в текущем MCU по y
-			for x := range UnitRowCount * scalingX {
-				vPadding = uint16(x / UnitRowCount)
+			for x := range unitRowCount * scalingX {
+				vPadding = uint16(x / unitRowCount)
 
-				for y := range UnitColCount * scalingY {
-					hPadding = uint16(y / UnitColCount)
+				for y := range unitColCount * scalingY {
+					hPadding = uint16(y / unitColCount)
 
 					switch ch {
 					case Y:
-						res[curV+vPadding][curH+hPadding][x%UnitRowCount][y%UnitColCount].y = unit[x/scalingX][y/scalingY]
+						res[curV+vPadding][curH+hPadding][x%unitRowCount][y%unitColCount].y = unit[x/scalingX][y/scalingY]
 					case Cb:
-						res[curV+vPadding][curH+hPadding][x%UnitRowCount][y%UnitColCount].cb = unit[x/scalingX][y/scalingY]
+						res[curV+vPadding][curH+hPadding][x%unitRowCount][y%unitColCount].cb = unit[x/scalingX][y/scalingY]
 					case Cr:
-						res[curV+vPadding][curH+hPadding][x%UnitRowCount][y%UnitColCount].cr = unit[x/scalingX][y/scalingY]
+						res[curV+vPadding][curH+hPadding][x%unitRowCount][y%unitColCount].cr = unit[x/scalingX][y/scalingY]
 					}
 				}
 			}
@@ -452,33 +445,33 @@ func componentCalc(blocks [][]MCU, x uint, y uint, res [][]yCbCrMatrix, ch Chann
 
 // Копирование в результат информации из блока YCbCrMatrix
 // x y - координаты левого верхнего угла блока в результате
-func copyToRes(curMatrix yCbCrMatrix, res [][]rgb, x int, y int) {
-	for i := 0; i < len(curMatrix) && x+i < int(imageHeight); i++ {
-		for j := 0; j < len(curMatrix[0]) && y+j < int(imageWidth); j++ {
+func (jpeg *JPEG) copyToRes(curMatrix yCbCrMatrix, res [][]Rgb, x int, y int) {
+	for i := 0; i < len(curMatrix) && x+i < int(jpeg.ImageHeight); i++ {
+		for j := 0; j < len(curMatrix[0]) && y+j < int(jpeg.ImageWidth); j++ {
 			curMatrix[i][j].toRGB(&res[x+i][y+j])
 		}
 	}
 }
 
 // Вычисления над прочитанными данными
-func rgbCalc(blocks [][]MCU) {
-	numBlocksHeight := int(NumOfMCUHeight) / int(maxV)
-	numBlocksWidth := int(NumOfMCUWidth) / int(maxH)
+func (jpeg *JPEG) rgbCalc(blocks [][]MCU) {
+	numBlocksHeight := int(jpeg.numOfMCUHeight) / int(jpeg.maxV)
+	numBlocksWidth := int(jpeg.numOfMCUWidth) / int(jpeg.maxH)
 
 	for row := range numBlocksHeight {
 		for col := range numBlocksWidth {
-			mcuRow := row * int(maxV) // Номер текущего MCU
-			mcuCol := col * int(maxH) // Номер текущего MCU
+			mcuRow := row * int(jpeg.maxV) // Номер текущего MCU
+			mcuCol := col * int(jpeg.maxH) // Номер текущего MCU
 
-			curBlock := createYCbCrBlock(maxV, maxH)
+			curBlock := createYCbCrBlock(jpeg.maxV, jpeg.maxH)
 
-			for c := range numOfComps {
-				componentCalc(blocks, uint(mcuRow), uint(mcuCol), curBlock, Channel(c))
+			for c := range jpeg.numOfComps {
+				jpeg.componentCalc(blocks, uint(mcuRow), uint(mcuCol), curBlock, Channel(c))
 			}
 
-			for i := range int(maxV) {
-				for j := range int(maxH) {
-					copyToRes(curBlock[i][j], img, mcuRow*UnitRowCount+i*UnitRowCount, mcuCol*UnitColCount+j*UnitColCount)
+			for i := range int(jpeg.maxV) {
+				for j := range int(jpeg.maxH) {
+					jpeg.copyToRes(curBlock[i][j], jpeg.img, mcuRow*unitRowCount+i*unitRowCount, mcuCol*unitColCount+j*unitColCount)
 				}
 			}
 		}

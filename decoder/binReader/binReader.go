@@ -23,7 +23,6 @@ type BinReader struct {
 	bitCount     byte   //Счетчик бит в текущем байте
 }
 
-// Инициализация объекта BinReader на расположение source
 func BinReaderInit(source string, end Endian) (*BinReader, error) {
 	var reader BinReader
 	temp, err := os.Open(source)
@@ -38,6 +37,17 @@ func BinReaderInit(source string, end Endian) (*BinReader, error) {
 	reader.bitCount = 0
 	return &reader, nil
 }
+
+// Инициализация объекта BinReader на расположение source
+// func BinReaderInit(source *bufio.Reader) *BinReader {
+// 	var reader BinReader
+// 	reader.src = source
+// 	reader.end = BIG
+// 	reader.isHuffStream = false
+// 	reader.curByte = 0
+// 	reader.bitCount = 0
+// 	return &reader
+// }
 
 // Деструктор объекта
 func (b *BinReader) Close() error {
@@ -164,4 +174,12 @@ func (b *BinReader) GetArray(n uint16) []byte {
 		res[i] = b.GetByte()
 	}
 	return res
+}
+
+// Декодирование символа EOB
+func (b *BinReader) DecodeEndOfBand(count byte) uint16 {
+	var ans uint16
+	ans = 1 << count
+	ans += b.GetBits(count)
+	return ans
 }

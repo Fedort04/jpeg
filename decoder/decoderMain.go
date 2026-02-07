@@ -41,319 +41,213 @@ const maxComps = 3     //Максимальное количество комп�
 const colCount = 8     //Количество столбцов в таблице квантования (для вывода в лог)
 const sizeOfTable = 64 //Количество элементов в одной таблице квантования
 
-var withDump bool = false                    //Флаг вывода информации заголовков в лог
-var isProgressive bool                       //Флаг для прогрессивного декодирования
-var reader *binreader.BinReader              //Объект для чтения файла
-var quantTables [numOfTables][]byte          //Массив с таблицами квантования
-var acTables [numOfTables]*huffman.HuffTable //Массив с AC таблицами Хаффмана
-var dcTables [numOfTables]*huffman.HuffTable //Массив с DC таблицами Хаффмана
-var samplePrecision byte                     //Глубина цвета
-var imageWidth uint16                        //Ширина изображения
-var imageHeight uint16                       //Высота изображения
-var maxH byte                                //Максимальный Н фактор
-var maxV byte                                //Максимальный V фактор
-var numOfComps byte                          //Количество цветовых компонет в изображении
-var comps [maxComps]component                //Массив с данными о компонентах
-var restartInterval uint16                   //Интервал перезапуска дельта кодирования
-var startSpectral byte                       //Начало spectral selection для текущего скана
-var endSpectral byte                         //Конец spectral selection для текущего скана
-var saHigh byte                              //Предыдущий бит для аппроксимации компоненты для текущего скана
-var saLow byte                               //Текущий бит для аппроксимации компоненты для текущего скана
+type JPEG struct {
+	ImageHeight   uint16 //Высота изображения
+	ImageWidth    uint16 //Ширина изображения
+	IsProgressive bool   //Флаг для прогрессивного декодирования
+	CurStatus     uint16 //Текущее состояние чтения
 
-var img [][]rgb //Результирующее изображение
-
-// Инит переменных
-func decoderInit() {
-	restartInterval = 0
+	reader          *binreader.BinReader            //Объект для чтения файла
+	quantTables     [numOfTables][]byte             //Массив с таблицами квантования
+	acTables        [numOfTables]*huffman.HuffTable //Массив с AC таблицами Хаффмана
+	dcTables        [numOfTables]*huffman.HuffTable //Массив с DC таблицами Хаффмана
+	samplePrecision byte                            //Глубина цвета
+	maxH            byte                            //Максимальный Н фактор
+	maxV            byte                            //Максимальный V фактор
+	numOfComps      byte                            //Количество цветовых компонет в изображении
+	comps           [maxComps]component             //Массив с данными о компонентах
+	restartInterval uint16                          //Интервал перезапуска дельта кодирования
+	startSpectral   byte                            //Начало spectral selection для текущего скана
+	endSpectral     byte                            //Конец spectral selection для текущего скана
+	saHigh          byte                            //Предыдущий бит для аппроксимации компоненты для текущего скана
+	saLow           byte                            //Текущий бит для аппроксимации компоненты для текущего скана
+	numOfMCUHeight  uint16                          //Количество MCU в изображении по высоте
+	numOfMCUWidth   uint16                          //Количество MCU в изображении по ширине
+	img             Image                           //Результирующее изображение
 }
 
 // Чтение маркера marker
-func readMarker(marker uint16) bool {
-	if temp := reader.GetWord(); temp != marker {
+func (jpeg *JPEG) readMarker(marker uint16) bool {
+	if temp := jpeg.reader.GetWord(); temp != marker {
 		return false
 	}
 	return true
 }
 
 // Чтение сегмента приложения
-func readApp() {
-	ln := reader.GetWord()
-	reader.GetArray(ln - 2)
-
-	if withDump {
-		log.Print("APP")
-	}
+func (jpeg *JPEG) readApp() {
+	ln := jpeg.reader.GetWord()
+	jpeg.reader.GetArray(ln - 2)
 }
 
 // Чтение таблицы квантования
-func readQuantTable() {
-	reader.GetWord()
+func (jpeg *JPEG) readQuantTable() {
+	jpeg.reader.GetWord()
 	//До тех пор, пока следующий байт не будет маркером
-	for reader.GetNextByte() != 0xFF {
-		tq := reader.GetByte()
-		if tq > numOfTables-1 {
-			log.Fatal("readQuantTable -> invalid table destination", tq)
-		}
-		table := reader.GetArray(sizeOfTable)
-		quantTables[tq] = table
-
-		if withDump {
-			log.Printf("Quant table destination: %d\n", tq)
-			printTable(quantTables[tq])
-		}
+	tq := jpeg.reader.GetByte()
+	if tq > numOfTables-1 {
+		log.Fatal("readQuantTable -> invalid table destination", tq)
 	}
-}
-
-// Чтение и конструирование таблиц Хаффмана
-func readHuffTable() {
-	reader.GetWord()
-	tc, th := reader.Get4Bit()
-	if th > numOfTables-1 {
-		log.Fatal("readHuffTable -> invalid table destination", th)
-	}
-	offset := make([]byte, huffman.NumHuffCodesLen+1)
-	var sumElem byte //Количество символов
-	//Запись offset
-	for i := 1; i < huffman.NumHuffCodesLen+1; i++ {
-		sumElem += reader.GetByte()
-		offset[i] = sumElem
-	}
-	symbols := make([]byte, sumElem)
-	//Чтение символов
-	for i := range sumElem {
-		symbols[i] = reader.GetByte()
-	}
-	huff, err := huffman.MakeHuffTable(offset, symbols)
-	if err != nil {
-		log.Println("MakeHuffTable -> error")
-		log.Fatal(err.Error())
-	}
-	switch tc {
-	case 0:
-		dcTables[th] = huff
-	case 1:
-		acTables[th] = huff
-	default:
-		log.Fatal("readHuffTable -> invalid table ID")
-	}
-
-	if withDump {
-		temp := "DHT "
-		if tc == 0 {
-			temp += fmt.Sprintf("DC-table %d\n", th)
-		} else {
-			temp += fmt.Sprintf("AC-table %d\n", th)
-		}
-		log.Print(temp)
-		huffman.PrintHuffTable(huff)
-	}
-
+	table := jpeg.reader.GetArray(sizeOfTable)
+	jpeg.quantTables[tq] = table
 }
 
 // Чтение сегмента с перезапуском дельта-кодирования
-func readRestartInterval() {
-	reader.GetWord()
-	restartInterval = reader.GetWord()
-
-	if withDump {
-		log.Print("DRI restart interval: ", restartInterval)
-	}
+func (jpeg *JPEG) readRestartInterval() {
+	jpeg.reader.GetWord()
+	jpeg.restartInterval = jpeg.reader.GetWord()
 }
 
 // Чтение сегмента таблиц, возвращает следующие за сегментами 2 байта
-func readTables() uint16 {
-	marker := reader.GetWord()
+func (jpeg *JPEG) readTables() uint16 {
+	marker := jpeg.reader.GetWord()
 	isContinue := false
 	if marker >= APP0 && marker <= APP15 {
-		readApp()
+		jpeg.readApp()
 		isContinue = true
 	} else if marker == DQT {
-		readQuantTable()
+		jpeg.readQuantTable()
 		isContinue = true
 	} else if marker == DHT {
-		readHuffTable()
+		tc, th, huff, err := huffman.ReadHuffTable(jpeg.reader)
+
+		if err != nil {
+			log.Println("MakeHuffTable -> error")
+			log.Fatal(err.Error())
+		}
+		if th > numOfTables-1 {
+			log.Fatal("readHuffTable -> invalid table destination", th)
+		}
+		switch tc {
+		case 0:
+			jpeg.dcTables[th] = huff
+		case 1:
+			jpeg.acTables[th] = huff
+		default:
+			log.Fatal("readHuffTable -> invalid table ID")
+		}
+
 		isContinue = true
 	} else if marker == DRI {
-		readRestartInterval()
+		jpeg.readRestartInterval()
 		isContinue = true
 	}
 	if isContinue {
-		marker = readTables()
+		marker = jpeg.readTables()
 	}
 	return marker
 }
 
+// @todo сделать чистой функцией вне объекта jpeg
 // Обновление флагов использования в скане для каждой компоненты
-func updateFlags() {
-	for i := range comps {
-		comps[i].used = false
+func (jpeg *JPEG) updateFlags() {
+	for i := range jpeg.comps {
+		jpeg.comps[i].used = false
 	}
 }
 
 // Чтение заголовка кадра
-func readScanHeader() {
-	reader.GetWord()
-	ns := reader.GetByte()
+func (jpeg *JPEG) readScanHeader() {
+	jpeg.reader.GetWord()
+	ns := jpeg.reader.GetByte()
 
-	updateFlags()
+	jpeg.updateFlags()
 
 	//Для каждой компоненты
 	for range ns {
-		cs := reader.GetByte()
-		td, ta := reader.Get4Bit()
-		comps[cs-1].dcTableID = td
-		comps[cs-1].acTableID = ta
-		comps[cs-1].used = true
+		cs := jpeg.reader.GetByte()
+		td, ta := jpeg.reader.Get4Bit()
+		jpeg.comps[cs-1].dcTableID = td
+		jpeg.comps[cs-1].acTableID = ta
+		jpeg.comps[cs-1].used = true
 	}
-	startSpectral = reader.GetByte()
-	endSpectral = reader.GetByte()
-	if startSpectral > endSpectral || endSpectral > 63 {
-		log.Printf("spectralSelection params error: start: %d\tend: %d", startSpectral, endSpectral)
+	jpeg.startSpectral = jpeg.reader.GetByte()
+	jpeg.endSpectral = jpeg.reader.GetByte()
+	if jpeg.startSpectral > jpeg.endSpectral || jpeg.endSpectral > 63 {
+		log.Printf("spectralSelection params error: start: %d\tend: %d", jpeg.startSpectral, jpeg.endSpectral)
 		return
 	}
-	saHigh, saLow = reader.Get4Bit()
-
-	if withDump {
-		log.Print("SOS")
-		for i, temp := range comps {
-			if temp.used {
-				log.Printf("component %d:\tDC: %d\tAC: %d\n", i+1, temp.dcTableID, temp.acTableID)
-			}
-		}
-		log.Print("start Spectral Selection: ", startSpectral)
-		log.Print("end Spectral Selection: ", endSpectral)
-		log.Print("approximation high: ", saHigh, "; approximation low: ", saLow)
-	}
+	jpeg.saHigh, jpeg.saLow = jpeg.reader.Get4Bit()
 }
 
 // Чтение заголовка фрейма
-func readFrameHeader() {
-	reader.GetWord()
-	samplePrecision = reader.GetByte()
-	imageHeight = reader.GetWord()
-	imageWidth = reader.GetWord()
-	numOfComps = reader.GetByte()
+func (jpeg *JPEG) readFrameHeader() {
+	jpeg.reader.GetWord()
+	jpeg.samplePrecision = jpeg.reader.GetByte()
+	jpeg.ImageHeight = jpeg.reader.GetWord()
+	jpeg.ImageWidth = jpeg.reader.GetWord()
+	jpeg.numOfComps = jpeg.reader.GetByte()
 	//Для каждой компоненты
-	for range numOfComps {
-		c := reader.GetByte()
-		h, v := reader.Get4Bit()
-		if h > maxH {
-			maxH = h
+	for range jpeg.numOfComps {
+		c := jpeg.reader.GetByte()
+		h, v := jpeg.reader.Get4Bit()
+		if h > jpeg.maxH {
+			jpeg.maxH = h
 		}
-		if v > maxV {
-			maxV = v
+		if v > jpeg.maxV {
+			jpeg.maxV = v
 		}
-		tq := reader.GetByte()
-		comps[c-1] = component{h: h, v: v, quantTableID: tq}
-	}
-
-	if withDump {
-		log.Printf("sample Precision: %d\n", samplePrecision)
-		log.Printf("image Width: %d\n", imageWidth)
-		log.Printf("image Height: %d\n", imageHeight)
-		log.Printf("num Of Comps: %d\n", numOfComps)
-		for i := range numOfComps {
-			log.Printf("component %d\n", i+1)
-			printComponent(comps[i])
-		}
+		tq := jpeg.reader.GetByte()
+		jpeg.comps[c-1] = component{h: h, v: v, quantTableID: tq}
 	}
 }
 
 // Чтение скана
-func readScans() {
-	blocks := CreateMCUMatrix(NumOfMCUHeight, NumOfMCUWidth)
-	if isProgressive { //Считает в цикле все сканы, а в конце проводит вычисления по функции и возвращает уже ргб
+func (jpeg *JPEG) readScans() {
+	blocks := CreateMCUMatrix(jpeg.numOfMCUHeight, jpeg.numOfMCUWidth)
+	if jpeg.IsProgressive { //Считает в цикле все сканы, а в конце проводит вычисления по функции и возвращает уже ргб
 		for {
-			nextMarker := readTables()
+			nextMarker := jpeg.readTables()
 			if nextMarker == EOI {
 				break
 			} else if nextMarker != SOS {
 				log.Fatalf("readFrame can't read SOS\nMarker: %x", nextMarker)
 			}
-			readScanHeader()
-			decodeProgressiveScan(blocks)
-			if reader.GetNextByte() != 0xFF {
-				reader.BitsAlign()
+			jpeg.readScanHeader()
+			jpeg.decodeProgressiveScan(blocks)
+			if jpeg.reader.GetNextByte() != 0xFF {
+				jpeg.reader.BitsAlign()
 			}
 		}
 	} else { //Для Baseline
-		nextMarker := readTables()
+		nextMarker := jpeg.readTables()
 		if nextMarker != SOS {
 			log.Fatalf("readFrame can't read SOS\nMarker: %x", nextMarker)
 		}
-		readScanHeader()
-		decodeBaselineScan(blocks)
+		jpeg.readScanHeader()
+		jpeg.decodeBaselineScan(blocks)
 	}
-	rgbCalc(blocks)
+	jpeg.rgbCalc(blocks)
 }
 
 // Чтение кадра
-func readFrame() {
-	nextMarker := readTables()
+func (jpeg *JPEG) readFrame() {
+	nextMarker := jpeg.readTables()
 	switch nextMarker {
 	case SOF0:
-		isProgressive = false
+		jpeg.IsProgressive = false
 	case SOF2:
-		isProgressive = true
+		jpeg.IsProgressive = true
 	default:
 		log.Fatalf("readFrame can't read SOF0 or SOF2\nMarker: %x", nextMarker)
 	}
-	readFrameHeader()
+	jpeg.readFrameHeader()
 
-	unitsInit()
+	jpeg.unitsInit()
 
-	img = createRGBMatrix(imageHeight, imageWidth)
+	jpeg.img = createRGBMatrix(jpeg.ImageHeight, jpeg.ImageWidth)
 
-	readScans()
-
-	if withDump {
-		log.Print("Frame was readed")
-	}
-}
-
-// Чтение JPEG файла по пути source
-func ReadJPEG(source string, dump bool) [][]rgb {
-	withDump = dump
-	var err error
-	reader, err = binreader.BinReaderInit(source, binreader.BIG)
-	defer func() {
-		err := reader.Close()
-		if err != nil {
-			log.Fatal(err.Error())
-		}
-	}()
-	if err != nil {
-		log.Println("BinReaderInit -> Error")
-		log.Fatal(err.Error())
-	}
-
-	decoderInit()
-
-	if !readMarker(SOI) {
-		log.Fatal("Can't read SOI marker")
-	}
-
-	if withDump {
-		log.Println("SOI")
-	}
-
-	readFrame()
-
-	if withDump {
-		log.Print("EOI")
-	}
-
-	return img
+	jpeg.readScans()
 }
 
 // Кодирование в BMP для наглядности
-func encodeBMP(img [][]rgb, fileName string) {
+func encodeBMP(img [][]Rgb, fileName string, ImageHeight uint16, ImageWidth uint16) {
 	err := binwriter.BinwriterInit(fileName)
 	if err != nil {
 		log.Panic(err.Error())
 	}
-	height := imageHeight
-	width := imageWidth
+	height := ImageHeight
+	width := ImageWidth
 	paddingSize := width % 4
 	size := 14 + 12 + height*width*3 + paddingSize*height
 	binwriter.PutChar('B')
@@ -369,9 +263,9 @@ func encodeBMP(img [][]rgb, fileName string) {
 
 	for i := int(height - 1); i >= 0; i-- {
 		for j := 0; j < int(width); j++ {
-			binwriter.PutChar(img[i][j].b)
-			binwriter.PutChar(img[i][j].g)
-			binwriter.PutChar(img[i][j].r)
+			binwriter.PutChar(img[i][j].B)
+			binwriter.PutChar(img[i][j].G)
+			binwriter.PutChar(img[i][j].R)
 		}
 		for range paddingSize {
 			binwriter.PutChar(0)
@@ -395,27 +289,58 @@ func jpegNameToBmp(name string) (string, error) {
 }
 
 func ReadBaseline(path string) {
+	var jpeg JPEG
 	res, err := jpegNameToBmp(path)
 	if err != nil {
 		log.Fatal(err.Error())
 		return
 	}
 
-	img := ReadJPEG(path, false)
+	img := jpeg.ReadJPEG(path, false)
 	log.Print("READ SUCCESS")
-	encodeBMP(img, res)
+	encodeBMP(img, res, jpeg.ImageHeight, jpeg.ImageWidth)
 	log.Print("BMP SUCCESS")
 }
 
 func ReadProgressive(path string) {
+	var jpeg JPEG
 	res, err := jpegNameToBmp(path)
 	if err != nil {
 		log.Fatal(err.Error())
 		return
 	}
 
-	img := ReadJPEG(path, false)
+	img := jpeg.ReadJPEG(path, false)
 	log.Print("READ SUCCESS")
-	encodeBMP(img, res)
+	encodeBMP(img, res, jpeg.ImageHeight, jpeg.ImageWidth)
 	log.Print("BMP SUCCESS")
 }
+
+func (jpeg *JPEG) ReadJPEG(source string, dump bool) [][]Rgb {
+	jpeg.reader, _ = binreader.BinReaderInit(source, binreader.BIG)
+	defer func() {
+		err := jpeg.reader.Close()
+		if err != nil {
+			log.Fatal(err.Error())
+		}
+	}()
+
+	if !jpeg.readMarker(SOI) {
+		log.Fatal("Can't read SOI marker")
+	}
+
+	jpeg.readFrame()
+
+	return jpeg.img
+}
+
+// Чтение JPEG файла по пути source
+// Здесь читается хедер до первого скана и исходя из этого заполняется структура
+// func ReadJPEG(source *bufio.Reader) (*JPEG, error) {
+// 	var res JPEG
+// 	res.reader = binreader.BinReaderInit(source)
+// 	if !res.readMarker(SOI) {
+// 		return nil, errors.New("Image is not JPEG: can't read SOI marker")
+// 	}
+// 	return &res, nil
+// }

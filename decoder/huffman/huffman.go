@@ -42,7 +42,7 @@ func (h *HuffTable) DecodeHuff(reader *binreader.BinReader) uint16 {
 }
 
 // Восстановление кодов таблицы Хаффмана и конструирование объекта
-func MakeHuffTable(offset []byte, symbols []byte) (*HuffTable, error) {
+func makeHuffTable(offset []byte, symbols []byte) (*HuffTable, error) {
 	if offset[NumHuffCodesLen] > maxNumHuffSym {
 		return nil, errors.New("incorrect number of symbols")
 	}
@@ -61,14 +61,23 @@ func MakeHuffTable(offset []byte, symbols []byte) (*HuffTable, error) {
 	return &ans, nil
 }
 
-// Вывод таблицы Хаффмана
-func PrintHuffTable(huff *HuffTable) {
-	for i := range NumHuffCodesLen {
-		temp := fmt.Sprintf("%d: ", i+1)
-		for j := huff.offset[i]; j < huff.offset[i+1]; j++ {
-			temp += fmt.Sprintf("%x ", huff.codes[j])
-		}
-		fmt.Printf("%s\n", temp)
+// Чтение и конструирование таблиц Хаффмана
+// Возвращает tc, th, уже готовую таблицу
+func ReadHuffTable(reader *binreader.BinReader) (byte, byte, *HuffTable, error) {
+	reader.GetWord()
+	tc, th := reader.Get4Bit()
+	offset := make([]byte, NumHuffCodesLen+1)
+	var sumElem byte //Количество символов
+	//Запись offset
+	for i := 1; i < NumHuffCodesLen+1; i++ {
+		sumElem += reader.GetByte()
+		offset[i] = sumElem
 	}
-	log.Println()
+	symbols := make([]byte, sumElem)
+	//Чтение символов
+	for i := range sumElem {
+		symbols[i] = reader.GetByte()
+	}
+	huff, err := makeHuffTable(offset, symbols)
+	return tc, th, huff, err
 }
