@@ -2,9 +2,7 @@ package huffman
 
 import (
 	"errors"
-	"fmt"
 	binreader "jpeg/decoder/binReader"
-	"log"
 )
 
 const NumHuffCodesLen = 16 //Количество длин кодов Хаффмана
@@ -18,33 +16,28 @@ type HuffTable struct {
 }
 
 // Декодирование из битового потока значений Хаффмана с помощью binReader
-func (h *HuffTable) DecodeHuff(reader *binreader.BinReader) uint16 {
+func (h *HuffTable) DecodeHuff(reader *binreader.BinReader) (uint16, error) {
 	var code uint16
 	codeLen := 0
-	counter := 0
-	for counter < 100 {
+	for {
 		code = code << 1
 		code += uint16(reader.GetBit())
 		codeLen++
 		if codeLen > 16 {
-			fmt.Printf("code: %x, nextWords: %d %d %d\n", code, reader.GetByte(), reader.GetByte(), reader.GetByte())
-			return 0xFF
+			return 0, errors.New("Huffman bit-reading error: can't find a symbol")
 		}
 		for i := h.offset[codeLen-1]; i < h.offset[codeLen]; i++ {
 			if code == h.codes[i] {
-				return uint16(h.symbols[i])
+				return uint16(h.symbols[i]), nil
 			}
 		}
-		counter++
 	}
-	log.Fatal("decodeHuff -> error\nCan't find a symbol")
-	return 0
 }
 
 // Восстановление кодов таблицы Хаффмана и конструирование объекта
 func makeHuffTable(offset []byte, symbols []byte) (*HuffTable, error) {
 	if offset[NumHuffCodesLen] > maxNumHuffSym {
-		return nil, errors.New("incorrect number of symbols")
+		return nil, errors.New("Huffman recovery error: too much symbols")
 	}
 	var ans HuffTable
 	ans.offset = offset

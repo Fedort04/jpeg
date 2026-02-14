@@ -39,10 +39,11 @@ const (
 	RST7  uint16 = 0xFFD7
 )
 
-const numOfTables = 4  //Максимальное количество таблиц
-const maxComps = 3     //Максимальное количество компонент
-const colCount = 8     //Количество столбцов в таблице квантования (для вывода в лог)
-const sizeOfTable = 64 //Количество элементов в одной таблице квантования
+const numOfTables = 4   //Максимальное количество таблиц
+const numOfChannels = 3 //Максимальное количество цветовых компонент
+const maxComps = 3      //Максимальное количество компонент
+const colCount = 8      //Количество столбцов в таблице квантования (для вывода в лог)
+const sizeOfTable = 64  //Количество элементов в одной таблице квантования
 
 type JPEG struct {
 	ImageHeight   uint16 //Высота изображения
@@ -71,6 +72,7 @@ type JPEG struct {
 	numBlocksWidth  uint16                          //Количество блоков subsample по ширине
 	blockCount      uint                            //Общее количество прочитанных блоков mcu
 	wasEOI          bool                            //Флаг завершения чтения
+	readError       error                           //Ошибка при декодировании
 	img             Image                           //Результирующее изображение
 }
 
@@ -93,9 +95,12 @@ func (jpeg *JPEG) readQuantTable() {
 	jpeg.reader.GetWord()
 	//До тех пор, пока следующий байт не будет маркером
 	tq := jpeg.reader.GetByte()
+
 	if tq > numOfTables-1 {
-		log.Fatal("readQuantTable -> invalid table destination", tq)
+		jpeg.readError = errors.New("Segment reading error: Quant table invalid table destination")
+		return
 	}
+
 	table := jpeg.reader.GetArray(sizeOfTable)
 	jpeg.quantTables[tq] = table
 }
@@ -118,13 +123,10 @@ func (jpeg *JPEG) readTables() uint16 {
 		isContinue = true
 	} else if marker == DHT {
 		tc, th, huff, err := huffman.ReadHuffTable(jpeg.reader)
-
-		if err != nil {
-			log.Println("MakeHuffTable -> error")
-			log.Fatal(err.Error())
-		}
+		jpeg.readError = err
 		if th > numOfTables-1 {
-			log.Fatal("readHuffTable -> invalid table destination", th)
+			jpeg.readError = errors.New("Segment reading error: Huffman table invalid table destination")
+			return 0
 		}
 		switch tc {
 		case 0:
@@ -132,7 +134,8 @@ func (jpeg *JPEG) readTables() uint16 {
 		case 1:
 			jpeg.acTables[th] = huff
 		default:
-			log.Fatal("readHuffTable -> invalid table ID")
+			jpeg.readError = errors.New("Segment reading error: Huffman table invalid table ID")
+			return 0
 		}
 
 		isContinue = true
@@ -163,7 +166,18 @@ func (jpeg *JPEG) readScanHeader() {
 	//Для каждой компоненты
 	for range ns {
 		cs := jpeg.reader.GetByte()
+		if cs > numOfChannels {
+			jpeg.readError = errors.New("Segment reading error: too much color channels")
+			return
+		}
+
 		td, ta := jpeg.reader.Get4Bit()
+
+		if td > numOfTables || ta > numOfTables {
+			jpeg.readError = errors.New("Segment reading error: invalid huff-table channel ID")
+			return
+		}
+
 		jpeg.comps[cs-1].dcTableID = td
 		jpeg.comps[cs-1].acTableID = ta
 		jpeg.comps[cs-1].used = true
@@ -171,7 +185,7 @@ func (jpeg *JPEG) readScanHeader() {
 	jpeg.startSpectral = jpeg.reader.GetByte()
 	jpeg.endSpectral = jpeg.reader.GetByte()
 	if jpeg.startSpectral > jpeg.endSpectral || jpeg.endSpectral > 63 {
-		log.Printf("spectralSelection params error: start: %d\tend: %d", jpeg.startSpectral, jpeg.endSpectral)
+		jpeg.readError = fmt.Errorf("Segment reading error: spectralSelection params error: start: %d\tend: %d", jpeg.startSpectral, jpeg.endSpectral)
 		return
 	}
 	jpeg.saHigh, jpeg.saLow = jpeg.reader.Get4Bit()
@@ -181,9 +195,20 @@ func (jpeg *JPEG) readScanHeader() {
 func (jpeg *JPEG) readFrameHeader() {
 	jpeg.reader.GetWord()
 	jpeg.samplePrecision = jpeg.reader.GetByte()
+
+	if jpeg.samplePrecision != 8 && jpeg.samplePrecision != 16 {
+		jpeg.readError = errors.New("Segment reading error: invalid segment precision")
+	}
+
 	jpeg.ImageHeight = jpeg.reader.GetWord()
 	jpeg.ImageWidth = jpeg.reader.GetWord()
 	jpeg.numOfComps = jpeg.reader.GetByte()
+
+	if jpeg.numOfComps > numOfChannels {
+		jpeg.readError = errors.New("Segment reading error: too much color channels")
+		return
+	}
+
 	//Для каждой компоненты
 	for range jpeg.numOfComps {
 		c := jpeg.reader.GetByte()
@@ -200,8 +225,9 @@ func (jpeg *JPEG) readFrameHeader() {
 }
 
 // Чтение скана, iterCount - кол-во строк/сканов для текущего вычисления
-func (jpeg *JPEG) readScans(iterCount uint16) {
+func (jpeg *JPEG) readScans(iterCount uint16) bool {
 	var curRow uint16
+	var flag bool
 	readAll := iterCount == 0
 	startStatus := int(jpeg.CurStatus)
 
@@ -213,10 +239,14 @@ func (jpeg *JPEG) readScans(iterCount uint16) {
 				jpeg.wasEOI = true
 				break
 			} else if nextMarker != SOS {
-				log.Fatalf("readFrame can't read SOS\nMarker: %x", nextMarker)
+				jpeg.readError = errors.New("Scan reading error")
+				return false
 			}
 			jpeg.readScanHeader()
-			jpeg.decodeProgressiveScan(jpeg.blocks)
+			if !jpeg.decodeProgressiveScan(jpeg.blocks) {
+				return false
+			}
+
 			if jpeg.reader.GetNextByte() != 0xFF {
 				jpeg.reader.BitsAlign()
 			}
@@ -226,14 +256,19 @@ func (jpeg *JPEG) readScans(iterCount uint16) {
 		if jpeg.CurStatus == 0 {
 			nextMarker := jpeg.readTables()
 			if nextMarker != SOS {
-				log.Fatalf("readFrame can't read SOS\nMarker: %x", nextMarker)
+				jpeg.readError = errors.New("Scan reading error")
+				return false
 			}
 			jpeg.readScanHeader()
 			jpeg.decodeInit()
 		}
-		jpeg.CurStatus, curRow = jpeg.decodeBaselineScan(jpeg.blocks, iterCount)
+		jpeg.CurStatus, curRow, flag = jpeg.decodeBaselineScan(jpeg.blocks, iterCount)
+		if !flag {
+			return false
+		}
 	}
 	jpeg.rgbCalc(jpeg.blocks, readAll, startStatus, int(curRow))
+	return true
 }
 
 // Чтение заголовка файла до заголовка фрейма включительно
@@ -245,7 +280,8 @@ func (jpeg *JPEG) readFileHeader() {
 	case SOF2:
 		jpeg.IsProgressive = true
 	default:
-		log.Fatalf("readFrame can't read SOF0 or SOF2\nMarker: %x", nextMarker)
+		jpeg.readError = errors.New("Decoder works only with Baseline and Progressive DCT-based JPEG")
+		return
 	}
 	jpeg.readFrameHeader()
 }
@@ -256,8 +292,15 @@ func (jpeg *JPEG) ReadBaseJPEG(result Image, numOfRows uint16) (bool, error) {
 	if jpeg.CurStatus == 0 {
 		jpeg.constInit()
 	}
+
+	if len(result) != int(jpeg.ImageHeight) || len(result[0]) != int(jpeg.ImageWidth) {
+		return false, errors.New("Buffer size error")
+	}
 	jpeg.img = result
-	jpeg.readScans(numOfRows)
+
+	if !jpeg.readScans(numOfRows) {
+		return jpeg.wasEOI, jpeg.readError
+	}
 	return jpeg.wasEOI, nil
 }
 
@@ -267,8 +310,15 @@ func (jpeg *JPEG) ReadProgJPEG(result Image, numOfScans uint16) (bool, error) {
 	if jpeg.CurStatus == 0 {
 		jpeg.constInit()
 	}
+
+	if len(result) != int(jpeg.ImageHeight) || len(result[0]) != int(jpeg.ImageWidth) {
+		return false, errors.New("Buffer size error")
+	}
 	jpeg.img = result
-	jpeg.readScans(numOfScans)
+
+	if !jpeg.readScans(numOfScans) {
+		return jpeg.wasEOI, jpeg.readError
+	}
 	return jpeg.wasEOI, nil
 }
 
@@ -276,10 +326,17 @@ func (jpeg *JPEG) ReadProgJPEG(result Image, numOfScans uint16) (bool, error) {
 func ReadJPEG(source *bufio.Reader) (*JPEG, error) {
 	var res JPEG
 	res.reader = binreader.BinReaderInit(source)
+
 	if !res.readMarker(SOI) {
 		return nil, errors.New("Image is not JPEG: can't read SOI marker")
 	}
+
 	res.readFileHeader()
+
+	if res.readError != nil {
+		return nil, res.readError
+	}
+
 	return &res, nil
 }
 

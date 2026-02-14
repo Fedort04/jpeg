@@ -2,7 +2,6 @@ package binreader
 
 import (
 	"bufio"
-	"log"
 	"os"
 )
 
@@ -23,21 +22,6 @@ type BinReader struct {
 	bitCount     byte   //Счетчик бит в текущем байте
 }
 
-// func BinReaderInit(source string, end Endian) (*BinReader, error) {
-// 	var reader BinReader
-// 	temp, err := os.Open(source)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	reader.curFile = temp
-// 	reader.src = bufio.NewReader(temp)
-// 	reader.end = end
-// 	reader.isHuffStream = false
-// 	reader.curByte = 0
-// 	reader.bitCount = 0
-// 	return &reader, nil
-// }
-
 // Инициализация объекта BinReader на расположение source
 func BinReaderInit(source *bufio.Reader) *BinReader {
 	var reader BinReader
@@ -48,11 +32,6 @@ func BinReaderInit(source *bufio.Reader) *BinReader {
 	reader.bitCount = 0
 	return &reader
 }
-
-// Деструктор объекта
-// func (b *BinReader) Close() error {
-// 	return b.curFile.Close()
-// }
 
 // Изменить endian объекта BinReader
 func (b *BinReader) SetEndian(end Endian) {
@@ -77,16 +56,10 @@ func (b *BinReader) HuffStreamEnd() {
 
 // Чтение одного байта
 func (b *BinReader) GetByte() byte {
-	ans, err := b.src.ReadByte()
-	if err != nil {
-		log.Panic(err.Error())
-	}
+	ans, _ := b.src.ReadByte()
 
 	if b.isHuffStream && b.curByte == 0xFF && ans == 0x00 {
-		ans, err = b.src.ReadByte()
-		if err != nil {
-			log.Panic(err.Error())
-		}
+		ans, _ = b.src.ReadByte()
 	}
 
 	b.curByte = ans
@@ -110,10 +83,7 @@ func (b *BinReader) GetWord() uint16 {
 
 // Получение следующего байта без смещения указателя
 func (b *BinReader) GetNextByte() byte {
-	ans, err := b.src.Peek(1)
-	if err != nil {
-		log.Fatal("GetNextByte -> error", err.Error())
-	}
+	ans, _ := b.src.Peek(1)
 	return ans[0]
 }
 

@@ -156,6 +156,8 @@ func BaselineSequence(filename string) {
 
 // Обычное чтение всего изображения сразу
 func Common(files []string) {
+	var err error
+
 	for i := 1; i < len(files); i++ {
 		file, _ := os.Open(files[i])
 		jpeg, _ := decoder.ReadJPEG(bufio.NewReader(file))
@@ -163,9 +165,13 @@ func Common(files []string) {
 		res := decoder.CreateRGBMatrix(jpeg.ImageHeight, jpeg.ImageWidth)
 
 		if jpeg.IsProgressive {
-			jpeg.ReadProgJPEG(res, 0)
+			_, err = jpeg.ReadProgJPEG(res, 0)
 		} else {
-			jpeg.ReadBaseJPEG(res, 0)
+			_, err = jpeg.ReadBaseJPEG(res, 0)
+		}
+
+		if err != nil {
+			log.Fatal(err.Error())
 		}
 
 		filename, _ := decoder.JpegNameToBmp(files[i], 0)
