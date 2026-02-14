@@ -64,6 +64,13 @@ func CreateMCUMatrix(MCUsHeight uint16, MCUsWidth uint16) [][]MCU {
 	return blocks
 }
 
+// Копирование значений текущего MCU в dst
+func (unit *MCU) Copy(dst *MCU) {
+	copy(dst.Y, unit.Y)
+	copy(dst.Cb, unit.Cb)
+	copy(dst.Cr, unit.Cr)
+}
+
 // Деквантование
 // Передается номер канала ch и таблица квантования для него
 func (unit *MCU) Dequant(quantTable []byte, ch Channel) {

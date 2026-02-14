@@ -1,12 +1,15 @@
 package decoder
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
 	binreader "jpeg/decoder/binReader"
 	binwriter "jpeg/decoder/binWriter"
 	"jpeg/decoder/huffman"
 	"log"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -48,6 +51,7 @@ type JPEG struct {
 	CurStatus     uint16 //Текущее состояние чтения
 
 	reader          *binreader.BinReader            //Объект для чтения файла
+	blocks          [][]MCU                         // Текущие матрицы с коэф из ДКП
 	quantTables     [numOfTables][]byte             //Массив с таблицами квантования
 	acTables        [numOfTables]*huffman.HuffTable //Массив с AC таблицами Хаффмана
 	dcTables        [numOfTables]*huffman.HuffTable //Массив с DC таблицами Хаффмана
@@ -63,6 +67,10 @@ type JPEG struct {
 	saLow           byte                            //Текущий бит для аппроксимации компоненты для текущего скана
 	numOfMCUHeight  uint16                          //Количество MCU в изображении по высоте
 	numOfMCUWidth   uint16                          //Количество MCU в изображении по ширине
+	numBlocksHeight uint16                          //Количество блоков subsample по высоте
+	numBlocksWidth  uint16                          //Количество блоков subsample по ширине
+	blockCount      uint                            //Общее количество прочитанных блоков mcu
+	wasEOI          bool                            //Флаг завершения чтения
 	img             Image                           //Результирующее изображение
 }
 
@@ -138,7 +146,6 @@ func (jpeg *JPEG) readTables() uint16 {
 	return marker
 }
 
-// @todo сделать чистой функцией вне объекта jpeg
 // Обновление флагов использования в скане для каждой компоненты
 func (jpeg *JPEG) updateFlags() {
 	for i := range jpeg.comps {
@@ -192,36 +199,45 @@ func (jpeg *JPEG) readFrameHeader() {
 	}
 }
 
-// Чтение скана
-func (jpeg *JPEG) readScans() {
-	blocks := CreateMCUMatrix(jpeg.numOfMCUHeight, jpeg.numOfMCUWidth)
-	if jpeg.IsProgressive { //Считает в цикле все сканы, а в конце проводит вычисления по функции и возвращает уже ргб
-		for {
+// Чтение скана, iterCount - кол-во строк/сканов для текущего вычисления
+func (jpeg *JPEG) readScans(iterCount uint16) {
+	var curRow uint16
+	readAll := iterCount == 0
+	startStatus := int(jpeg.CurStatus)
+
+	if jpeg.IsProgressive {
+		temp := jpeg.CurStatus
+		for jpeg.CurStatus < temp+iterCount || readAll {
 			nextMarker := jpeg.readTables()
 			if nextMarker == EOI {
+				jpeg.wasEOI = true
 				break
 			} else if nextMarker != SOS {
 				log.Fatalf("readFrame can't read SOS\nMarker: %x", nextMarker)
 			}
 			jpeg.readScanHeader()
-			jpeg.decodeProgressiveScan(blocks)
+			jpeg.decodeProgressiveScan(jpeg.blocks)
 			if jpeg.reader.GetNextByte() != 0xFF {
 				jpeg.reader.BitsAlign()
 			}
+			jpeg.CurStatus++
 		}
-	} else { //Для Baseline
-		nextMarker := jpeg.readTables()
-		if nextMarker != SOS {
-			log.Fatalf("readFrame can't read SOS\nMarker: %x", nextMarker)
+	} else if !jpeg.wasEOI { //Для Baseline
+		if jpeg.CurStatus == 0 {
+			nextMarker := jpeg.readTables()
+			if nextMarker != SOS {
+				log.Fatalf("readFrame can't read SOS\nMarker: %x", nextMarker)
+			}
+			jpeg.readScanHeader()
+			jpeg.decodeInit()
 		}
-		jpeg.readScanHeader()
-		jpeg.decodeBaselineScan(blocks)
+		jpeg.CurStatus, curRow = jpeg.decodeBaselineScan(jpeg.blocks, iterCount)
 	}
-	jpeg.rgbCalc(blocks)
+	jpeg.rgbCalc(jpeg.blocks, readAll, startStatus, int(curRow))
 }
 
-// Чтение кадра
-func (jpeg *JPEG) readFrame() {
+// Чтение заголовка файла до заголовка фрейма включительно
+func (jpeg *JPEG) readFileHeader() {
 	nextMarker := jpeg.readTables()
 	switch nextMarker {
 	case SOF0:
@@ -232,22 +248,50 @@ func (jpeg *JPEG) readFrame() {
 		log.Fatalf("readFrame can't read SOF0 or SOF2\nMarker: %x", nextMarker)
 	}
 	jpeg.readFrameHeader()
-
-	jpeg.unitsInit()
-
-	jpeg.img = createRGBMatrix(jpeg.ImageHeight, jpeg.ImageWidth)
-
-	jpeg.readScans()
 }
 
+// Чтение изображения на кол-во строк numOfRows
+// Возвращает true, если прочитано до конца
+func (jpeg *JPEG) ReadBaseJPEG(result Image, numOfRows uint16) (bool, error) {
+	if jpeg.CurStatus == 0 {
+		jpeg.constInit()
+	}
+	jpeg.img = result
+	jpeg.readScans(numOfRows)
+	return jpeg.wasEOI, nil
+}
+
+// Чтение изображения на кол-во сканов numOfScans
+// Возвращает true, если прочитано до конца
+func (jpeg *JPEG) ReadProgJPEG(result Image, numOfScans uint16) (bool, error) {
+	if jpeg.CurStatus == 0 {
+		jpeg.constInit()
+	}
+	jpeg.img = result
+	jpeg.readScans(numOfScans)
+	return jpeg.wasEOI, nil
+}
+
+// Чтение JPEG файла по пути source
+func ReadJPEG(source *bufio.Reader) (*JPEG, error) {
+	var res JPEG
+	res.reader = binreader.BinReaderInit(source)
+	if !res.readMarker(SOI) {
+		return nil, errors.New("Image is not JPEG: can't read SOI marker")
+	}
+	res.readFileHeader()
+	return &res, nil
+}
+
+// =======================================
 // Кодирование в BMP для наглядности
-func encodeBMP(img [][]Rgb, fileName string, ImageHeight uint16, ImageWidth uint16) {
+func EncodeBMP(img Image, fileName string) {
 	err := binwriter.BinwriterInit(fileName)
 	if err != nil {
 		log.Panic(err.Error())
 	}
-	height := ImageHeight
-	width := ImageWidth
+	height := len(img)
+	width := len(img[0])
 	paddingSize := width % 4
 	size := 14 + 12 + height*width*3 + paddingSize*height
 	binwriter.PutChar('B')
@@ -278,69 +322,16 @@ func encodeBMP(img [][]Rgb, fileName string, ImageHeight uint16, ImageWidth uint
 }
 
 // Изменение строки названия расширения на .bmp
-func jpegNameToBmp(name string) (string, error) {
+func JpegNameToBmp(name string, counter int) (string, error) {
 	ext := filepath.Ext(name)
 	lowerExt := strings.ToLower(ext)
 	if lowerExt == ".jpg" || lowerExt == ".jpeg" {
 		base := name[:len(name)-len(ext)]
+		if counter != 0 {
+			num := strconv.Itoa(counter)
+			return base + num + ".bmp", nil
+		}
 		return base + ".bmp", nil
 	}
 	return "", fmt.Errorf("File is not jpeg")
 }
-
-func ReadBaseline(path string) {
-	var jpeg JPEG
-	res, err := jpegNameToBmp(path)
-	if err != nil {
-		log.Fatal(err.Error())
-		return
-	}
-
-	img := jpeg.ReadJPEG(path, false)
-	log.Print("READ SUCCESS")
-	encodeBMP(img, res, jpeg.ImageHeight, jpeg.ImageWidth)
-	log.Print("BMP SUCCESS")
-}
-
-func ReadProgressive(path string) {
-	var jpeg JPEG
-	res, err := jpegNameToBmp(path)
-	if err != nil {
-		log.Fatal(err.Error())
-		return
-	}
-
-	img := jpeg.ReadJPEG(path, false)
-	log.Print("READ SUCCESS")
-	encodeBMP(img, res, jpeg.ImageHeight, jpeg.ImageWidth)
-	log.Print("BMP SUCCESS")
-}
-
-func (jpeg *JPEG) ReadJPEG(source string, dump bool) [][]Rgb {
-	jpeg.reader, _ = binreader.BinReaderInit(source, binreader.BIG)
-	defer func() {
-		err := jpeg.reader.Close()
-		if err != nil {
-			log.Fatal(err.Error())
-		}
-	}()
-
-	if !jpeg.readMarker(SOI) {
-		log.Fatal("Can't read SOI marker")
-	}
-
-	jpeg.readFrame()
-
-	return jpeg.img
-}
-
-// Чтение JPEG файла по пути source
-// Здесь читается хедер до первого скана и исходя из этого заполняется структура
-// func ReadJPEG(source *bufio.Reader) (*JPEG, error) {
-// 	var res JPEG
-// 	res.reader = binreader.BinReaderInit(source)
-// 	if !res.readMarker(SOI) {
-// 		return nil, errors.New("Image is not JPEG: can't read SOI marker")
-// 	}
-// 	return &res, nil
-// }

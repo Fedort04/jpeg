@@ -43,7 +43,7 @@ var positiveBit int16
 var negativeBit int16
 
 // Создание пустого изображения RGB
-func createRGBMatrix(height uint16, width uint16) [][]Rgb {
+func CreateRGBMatrix(height uint16, width uint16) Image {
 	res := make([][]Rgb, height)
 	for i := range height {
 		res[i] = make([]Rgb, width)
@@ -73,12 +73,17 @@ func createYCbCrBlock(height byte, width byte) [][]yCbCrMatrix {
 }
 
 // Вычисление тех переменных, которые нужны при сканах, но вычисляются единожды
-func (jpeg *JPEG) unitsInit() {
+func (jpeg *JPEG) constInit() {
 	jpeg.numOfMCUHeight = (jpeg.ImageHeight + (unitRowCount - 1)) / (unitRowCount)
 	jpeg.numOfMCUHeight += jpeg.numOfMCUHeight % uint16(jpeg.maxV)
 
 	jpeg.numOfMCUWidth = (jpeg.ImageWidth + (unitColCount - 1)) / (unitColCount)
 	jpeg.numOfMCUWidth += jpeg.numOfMCUWidth % uint16(jpeg.maxH)
+
+	jpeg.numBlocksHeight = jpeg.numOfMCUHeight / uint16(jpeg.maxV)
+	jpeg.numBlocksWidth = jpeg.numOfMCUWidth / uint16(jpeg.maxH)
+
+	jpeg.blocks = CreateMCUMatrix(jpeg.numOfMCUHeight, jpeg.numOfMCUWidth)
 }
 
 // Инициализация дельта-декодирования, перезапуск bands, инициализация побитового чтения
@@ -220,25 +225,40 @@ func (jpeg *JPEG) decodeBaselineBlock(mcus [][]MCU, x uint16, y uint16) {
 
 // Baseline
 // Декодирование скана, blocks - ссылка на прочитанное к моменту вызова функции изображение
-func (jpeg *JPEG) decodeBaselineScan(mcus [][]MCU) {
-	jpeg.decodeInit()
-	defer jpeg.reader.HuffStreamEnd()
+// Возвращает номер строки блоков и номер строки в пикселях, на которых остановилось вычисление
+func (jpeg *JPEG) decodeBaselineScan(mcus [][]MCU, increment uint16) (uint16, uint16) {
+	var row uint16 //Счетчик строк блоков MCU
+	var col uint16 //Счетчик столбцов блоков MCU
 
-	var blockCount uint //Общее количество прочитанных блоков mcu
-	var row uint16      //Счетчик строк блоков MCU
-	var col uint16      //Счетчик столбцов блоков MCU
-	numBlocksHeight := jpeg.numOfMCUHeight / uint16(jpeg.maxV)
-	numBlocksWidth := jpeg.numOfMCUWidth / uint16(jpeg.maxH)
+	//Для построчного чтения
+	row = (jpeg.CurStatus + (unitRowCount - 1)) / (unitRowCount)
+	row += row % uint16(jpeg.maxV)
+	row /= uint16(jpeg.maxV)
+	if increment == 0 {
+		increment--
+	} else {
+		increment = (increment + (unitRowCount - 1)) / (unitRowCount)
+		increment += increment % uint16(jpeg.maxV)
+		increment /= uint16(jpeg.maxV)
+		increment += row
+	}
 
-	for row = range numBlocksHeight {
-		for col = range numBlocksWidth {
+	//Блоки в изображении с учетом subsample
+	for ; row < jpeg.numBlocksHeight && row < increment; row++ {
+		for col = range jpeg.numBlocksWidth {
 			jpeg.decodeBaselineBlock(mcus, row*uint16(jpeg.maxV), col*uint16(jpeg.maxH))
-			blockCount++
-			if jpeg.restartInterval != 0 && blockCount%uint(jpeg.restartInterval) == 0 && !jpeg.makeRestart() {
+			jpeg.blockCount++
+			if jpeg.restartInterval != 0 && jpeg.blockCount%uint(jpeg.restartInterval) == 0 && !jpeg.makeRestart() {
 				log.Fatal("makeRestart wrong marker")
 			}
 		}
 	}
+	res := row * unitColCount * uint16(jpeg.maxV)
+	if res >= jpeg.ImageHeight {
+		jpeg.wasEOI = true
+		jpeg.reader.HuffStreamEnd()
+	}
+	return res, row
 }
 
 // Пропуск нулей при refinement
@@ -389,12 +409,10 @@ func (jpeg *JPEG) decodeProgressiveScan(mcus [][]MCU) {
 	var blockCount uint //Общее количество прочитанных блоков mcu
 	var row uint16      //Счетчик строк блоков MCU
 	var col uint16      //Счетчик столбцов блоков MCU
-	numBlocksHeight := jpeg.numOfMCUHeight / uint16(jpeg.maxV)
-	numBlocksWidth := jpeg.numOfMCUWidth / uint16(jpeg.maxH)
 
 	if jpeg.startSpectral == 0 && jpeg.endSpectral == 0 { // Только для DC сканов
-		for row = range numBlocksHeight {
-			for col = range numBlocksWidth {
+		for row = range jpeg.numBlocksHeight {
+			for col = range jpeg.numBlocksWidth {
 				jpeg.decodeProgressiveDC(mcus, row*uint16(jpeg.maxV), col*uint16(jpeg.maxH))
 				blockCount++
 				if jpeg.restartInterval != 0 && blockCount%uint(jpeg.restartInterval) == 0 && !jpeg.makeRestart() {
@@ -409,11 +427,17 @@ func (jpeg *JPEG) decodeProgressiveScan(mcus [][]MCU) {
 
 // Вычисление YCbCr для канала ch
 // x y - координаты левого верхнего MCU в блоке
-func (jpeg *JPEG) componentCalc(blocks [][]MCU, x uint, y uint, res [][]yCbCrMatrix, ch Channel) {
+func (jpeg *JPEG) componentCalc(blocks [][]MCU, x uint, y uint, res [][]yCbCrMatrix, ch Channel, readAll bool) {
 	// Перевод в YCbCr
 	for curV := range uint16(jpeg.comps[ch].v) {
 		for curH := range uint16(jpeg.comps[ch].h) {
-			curMCU := blocks[x+uint(curV)][y+uint(curH)]
+			var curMCU MCU
+			if !readAll && jpeg.IsProgressive {
+				curMCU = MakeMCU()
+				blocks[x+uint(curV)][y+uint(curH)].Copy(&curMCU)
+			} else {
+				curMCU = blocks[x+uint(curV)][y+uint(curH)]
+			}
 			scalingX := jpeg.maxV / jpeg.comps[ch].v
 			scalingY := jpeg.maxH / jpeg.comps[ch].h
 
@@ -453,20 +477,27 @@ func (jpeg *JPEG) copyToRes(curMatrix yCbCrMatrix, res [][]Rgb, x int, y int) {
 	}
 }
 
-// Вычисления над прочитанными данными
-func (jpeg *JPEG) rgbCalc(blocks [][]MCU) {
-	numBlocksHeight := int(jpeg.numOfMCUHeight) / int(jpeg.maxV)
-	numBlocksWidth := int(jpeg.numOfMCUWidth) / int(jpeg.maxH)
+// Вычисления над прочитанными данными, readAll - флаг чтения всего изображения сразу для отпимизации
+func (jpeg *JPEG) rgbCalc(blocks [][]MCU, readAll bool, startRow int, endRow int) {
+	var rowMax int
+	var row int
+	if jpeg.IsProgressive {
+		rowMax = int(jpeg.numBlocksHeight)
+		row = 0
+	} else {
+		rowMax = endRow
+		row = int(startRow / unitRowCount / int(jpeg.maxV))
+	}
 
-	for row := range numBlocksHeight {
-		for col := range numBlocksWidth {
+	for ; row < rowMax; row++ {
+		for col := range int(jpeg.numBlocksWidth) {
 			mcuRow := row * int(jpeg.maxV) // Номер текущего MCU
 			mcuCol := col * int(jpeg.maxH) // Номер текущего MCU
 
 			curBlock := createYCbCrBlock(jpeg.maxV, jpeg.maxH)
 
 			for c := range jpeg.numOfComps {
-				jpeg.componentCalc(blocks, uint(mcuRow), uint(mcuCol), curBlock, Channel(c))
+				jpeg.componentCalc(blocks, uint(mcuRow), uint(mcuCol), curBlock, Channel(c), readAll)
 			}
 
 			for i := range int(jpeg.maxV) {

@@ -23,36 +23,36 @@ type BinReader struct {
 	bitCount     byte   //Счетчик бит в текущем байте
 }
 
-func BinReaderInit(source string, end Endian) (*BinReader, error) {
-	var reader BinReader
-	temp, err := os.Open(source)
-	if err != nil {
-		return nil, err
-	}
-	reader.curFile = temp
-	reader.src = bufio.NewReader(temp)
-	reader.end = end
-	reader.isHuffStream = false
-	reader.curByte = 0
-	reader.bitCount = 0
-	return &reader, nil
-}
-
-// Инициализация объекта BinReader на расположение source
-// func BinReaderInit(source *bufio.Reader) *BinReader {
+// func BinReaderInit(source string, end Endian) (*BinReader, error) {
 // 	var reader BinReader
-// 	reader.src = source
-// 	reader.end = BIG
+// 	temp, err := os.Open(source)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	reader.curFile = temp
+// 	reader.src = bufio.NewReader(temp)
+// 	reader.end = end
 // 	reader.isHuffStream = false
 // 	reader.curByte = 0
 // 	reader.bitCount = 0
-// 	return &reader
+// 	return &reader, nil
 // }
 
-// Деструктор объекта
-func (b *BinReader) Close() error {
-	return b.curFile.Close()
+// Инициализация объекта BinReader на расположение source
+func BinReaderInit(source *bufio.Reader) *BinReader {
+	var reader BinReader
+	reader.src = source
+	reader.end = BIG
+	reader.isHuffStream = false
+	reader.curByte = 0
+	reader.bitCount = 0
+	return &reader
 }
+
+// Деструктор объекта
+// func (b *BinReader) Close() error {
+// 	return b.curFile.Close()
+// }
 
 // Изменить endian объекта BinReader
 func (b *BinReader) SetEndian(end Endian) {
@@ -64,13 +64,13 @@ func (b *BinReader) SetEndian(end Endian) {
 	}
 }
 
-// Запуск чтения Хаффмана
+// Запуск чтения битового потока Хаффмана
 func (b *BinReader) HuffStreamStart() {
 	b.bitCount = 0
 	b.isHuffStream = true
 }
 
-// Отключение чтения Хаффмана
+// Отключение чтения битового потока Хаффмана
 func (b *BinReader) HuffStreamEnd() {
 	b.isHuffStream = false
 }

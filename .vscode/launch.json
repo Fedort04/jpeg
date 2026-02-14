@@ -12,7 +12,7 @@
             "mode": "auto",
             "program": "${workspaceFolder}",
             "args": [
-                "decoder/pics/Progressive/EikyuuStage.jpeg"
+                "decoder/pics/Baseline/Aika.jpg"
             ]
         }
 
