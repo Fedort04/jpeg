@@ -51,29 +51,31 @@ type JPEG struct {
 	IsProgressive bool   //Флаг для прогрессивного декодирования
 	CurStatus     uint16 //Текущее состояние чтения
 
-	reader          *binreader.BinReader            //Объект для чтения файла
-	blocks          [][]MCU                         // Текущие матрицы с коэф из ДКП
-	quantTables     [numOfTables][]byte             //Массив с таблицами квантования
-	acTables        [numOfTables]*huffman.HuffTable //Массив с AC таблицами Хаффмана
-	dcTables        [numOfTables]*huffman.HuffTable //Массив с DC таблицами Хаффмана
-	samplePrecision byte                            //Глубина цвета
-	maxH            byte                            //Максимальный Н фактор
-	maxV            byte                            //Максимальный V фактор
-	numOfComps      byte                            //Количество цветовых компонет в изображении
-	comps           [maxComps]component             //Массив с данными о компонентах
-	restartInterval uint16                          //Интервал перезапуска дельта кодирования
-	startSpectral   byte                            //Начало spectral selection для текущего скана
-	endSpectral     byte                            //Конец spectral selection для текущего скана
-	saHigh          byte                            //Предыдущий бит для аппроксимации компоненты для текущего скана
-	saLow           byte                            //Текущий бит для аппроксимации компоненты для текущего скана
-	numOfMCUHeight  uint16                          //Количество MCU в изображении по высоте
-	numOfMCUWidth   uint16                          //Количество MCU в изображении по ширине
-	numBlocksHeight uint16                          //Количество блоков subsample по высоте
-	numBlocksWidth  uint16                          //Количество блоков subsample по ширине
-	blockCount      uint                            //Общее количество прочитанных блоков mcu
-	wasEOI          bool                            //Флаг завершения чтения
-	readError       error                           //Ошибка при декодировании
-	img             Image                           //Результирующее изображение
+	reader             *binreader.BinReader            //Объект для чтения файла
+	blocks             [][]MCU                         // Текущие матрицы с коэф из ДКП
+	quantTables        [numOfTables][]byte             //Массив с таблицами квантования
+	acTables           [numOfTables]*huffman.HuffTable //Массив с AC таблицами Хаффмана
+	dcTables           [numOfTables]*huffman.HuffTable //Массив с DC таблицами Хаффмана
+	samplePrecision    byte                            //Глубина цвета
+	maxH               byte                            //Максимальный Н фактор
+	maxV               byte                            //Максимальный V фактор
+	numOfComps         byte                            //Количество цветовых компонет в изображении
+	comps              [maxComps]component             //Массив с данными о компонентах
+	restartInterval    uint16                          //Интервал перезапуска дельта кодирования
+	startSpectral      byte                            //Начало spectral selection для текущего скана
+	endSpectral        byte                            //Конец spectral selection для текущего скана
+	saHigh             byte                            //Предыдущий бит для аппроксимации компоненты для текущего скана
+	saLow              byte                            //Текущий бит для аппроксимации компоненты для текущего скана
+	numOfMCUHeight     uint16                          //Количество MCU в изображении по высоте
+	numOfMCUWidth      uint16                          //Количество MCU в изображении по ширине
+	numOfMCUHeightReal uint16                          //Реальное количество MCU в изображении по высоте
+	numOfMCUWidthReal  uint16                          //Реальное количество MCU в изображении по ширине
+	numBlocksHeight    uint16                          //Количество блоков subsample по высоте
+	numBlocksWidth     uint16                          //Количество блоков subsample по ширине
+	blockCount         uint                            //Общее количество прочитанных блоков mcu
+	wasEOI             bool                            //Флаг завершения чтения
+	readError          error                           //Ошибка при декодировании
+	img                Image                           //Результирующее изображение
 }
 
 // Чтение маркера marker
@@ -243,7 +245,7 @@ func (jpeg *JPEG) readScans(iterCount uint16) bool {
 				return false
 			}
 			jpeg.readScanHeader()
-			if !jpeg.decodeProgressiveScan(jpeg.blocks) {
+			if !jpeg.decodeProgressiveScan() {
 				return false
 			}
 
@@ -262,12 +264,12 @@ func (jpeg *JPEG) readScans(iterCount uint16) bool {
 			jpeg.readScanHeader()
 			jpeg.decodeInit()
 		}
-		jpeg.CurStatus, curRow, flag = jpeg.decodeBaselineScan(jpeg.blocks, iterCount)
+		curRow, flag = jpeg.decodeBaselineScan(iterCount)
 		if !flag {
 			return false
 		}
 	}
-	jpeg.rgbCalc(jpeg.blocks, readAll, startStatus, int(curRow))
+	jpeg.rgbCalc(readAll, startStatus, int(curRow))
 	return true
 }
 

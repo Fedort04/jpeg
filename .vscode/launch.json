@@ -12,7 +12,7 @@
             "mode": "auto",
             "program": "${workspaceFolder}",
             "args": [
-                "decoder/pics/Baseline/Aika.jpg"
+                "decoder/pics/Progressive/Takatsuki.jpg"
             ]
         }
 

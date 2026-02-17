@@ -69,6 +69,7 @@ func ProgressiveSequence(filename string) {
 	}
 
 	if !jpeg.IsProgressive {
+		log.Print("This jpeg is not Progressive")
 		return
 	}
 
@@ -134,6 +135,7 @@ func BaselineSequence(filename string) {
 	}
 
 	if jpeg.IsProgressive {
+		log.Print("This jpeg is Progressive")
 		return
 	}
 
@@ -165,8 +167,10 @@ func Common(files []string) {
 		res := decoder.CreateRGBMatrix(jpeg.ImageHeight, jpeg.ImageWidth)
 
 		if jpeg.IsProgressive {
+			log.Print("Progressive " + files[i])
 			_, err = jpeg.ReadProgJPEG(res, 0)
 		} else {
+			log.Print("Baseline " + files[i])
 			_, err = jpeg.ReadBaseJPEG(res, 0)
 		}
 
