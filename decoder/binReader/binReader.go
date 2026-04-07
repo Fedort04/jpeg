@@ -2,7 +2,6 @@ package binreader
 
 import (
 	"bufio"
-	"os"
 )
 
 // Перечисление типов Endianness
@@ -15,14 +14,13 @@ const (
 
 type BinReader struct {
 	src          *bufio.Reader //Источник для чтения
-	curFile      *os.File
-	end          Endian //Endianness
-	isHuffStream bool   //Флаг вычисления битового потока (для пропуска нулей в 0xFF-0x00)
-	curByte      byte   //Текущее значение байта для побитового чтения
-	bitCount     byte   //Счетчик бит в текущем байте
+	end          Endian        //Endianness
+	isHuffStream bool          //Флаг вычисления битового потока (для пропуска нулей в 0xFF-0x00)
+	curByte      byte          //Текущее значение байта для побитового чтения
+	bitCount     byte          //Счетчик бит в текущем байте
 }
 
-// Инициализация объекта BinReader на расположение source
+// Конструктор объекта BinReader на расположение source
 func BinReaderInit(source *bufio.Reader) *BinReader {
 	var reader BinReader
 	reader.src = source
@@ -144,12 +142,4 @@ func (b *BinReader) GetArray(n uint16) []byte {
 		res[i] = b.GetByte()
 	}
 	return res
-}
-
-// Декодирование символа EOB
-func (b *BinReader) DecodeEndOfBand(count byte) uint16 {
-	var ans uint16
-	ans = 1 << count
-	ans += b.GetBits(count)
-	return ans
 }

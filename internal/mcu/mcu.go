@@ -1,4 +1,4 @@
-package decoder
+package mcu
 
 // Последовательность зиг-зага
 var zigZagTable [8][8]byte = [8][8]byte{
@@ -24,8 +24,8 @@ var idctTable [8][8]float64 = [8][8]float64{
 	{0.195090, -0.555570, 0.831470, -0.980785, 0.980785, -0.831470, 0.555570, -0.195090},
 }
 
-const unitRowCount = 8 //Количество строк в data unit
-const unitColCount = 8 //Количество столбцов в data unit
+const UnitRowCount = 8 //Количество строк в data unit
+const UnitColCount = 8 //Количество столбцов в data unit
 
 type Channel byte
 
@@ -46,9 +46,9 @@ type MCU struct {
 // Конструткор MCU
 func MakeMCU() MCU {
 	var res MCU
-	res.Y = make([]int16, unitRowCount*unitColCount)
-	res.Cb = make([]int16, unitRowCount*unitColCount)
-	res.Cr = make([]int16, unitRowCount*unitColCount)
+	res.Y = make([]int16, UnitRowCount*UnitColCount)
+	res.Cb = make([]int16, UnitRowCount*UnitColCount)
+	res.Cr = make([]int16, UnitRowCount*UnitColCount)
 	return res
 }
 
@@ -93,10 +93,10 @@ func (unit *MCU) Dequant(quantTable []byte, ch Channel) {
 // Зиг-заг преобразование
 func zigZag(unit []int16) [][]int16 {
 	//Создание матрицы
-	res := make([][]int16, unitRowCount)
-	for i := range unitRowCount {
-		res[i] = make([]int16, unitColCount)
-		for j := range unitColCount {
+	res := make([][]int16, UnitRowCount)
+	for i := range UnitRowCount {
+		res[i] = make([]int16, UnitColCount)
+		for j := range UnitColCount {
 			res[i][j] = unit[zigZagTable[i][j]]
 		}
 	}
@@ -105,15 +105,15 @@ func zigZag(unit []int16) [][]int16 {
 
 // Обратное дискретно-косинусное преобразование
 func idctCalc(unit [][]int16) [][]float32 {
-	res := make([][]float32, unitRowCount)
-	for i := range unitRowCount {
-		res[i] = make([]float32, unitColCount)
+	res := make([][]float32, UnitRowCount)
+	for i := range UnitRowCount {
+		res[i] = make([]float32, UnitColCount)
 	}
-	for x := range unitRowCount {
-		for y := range unitColCount {
+	for x := range UnitRowCount {
+		for y := range UnitColCount {
 			sum := 0.0
-			for u := range unitRowCount {
-				for v := range unitColCount {
+			for u := range UnitRowCount {
+				for v := range UnitColCount {
 					sum += float64(unit[u][v]) * idctTable[u][x] * idctTable[v][y]
 				}
 			}

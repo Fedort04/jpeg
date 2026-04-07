@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"jpeg/decoder"
+	"jpeg/encoder"
 	"log"
 	"os"
 	"path/filepath"
@@ -183,15 +184,21 @@ func Common(files []string) {
 	}
 }
 
-func main() {
-	if len(os.Args) < 2 {
-		log.Print("Введите путь к файлу в параметрах\n")
-		return
-	}
+// Для декодера
+// func main() {
+// 	if len(os.Args) < 2 {
+// 		log.Print("Введите путь к файлу в параметрах\n")
+// 		return
+// 	}
 
-	Common(os.Args)
-	for i := 1; i < len(os.Args); i++ {
-		// ProgressiveSequence(os.Args[i])
-		// BaselineSequence(os.Args[i])
-	}
+// 	Common(os.Args)
+// 	for i := 1; i < len(os.Args); i++ {
+// 		// ProgressiveSequence(os.Args[i])
+// 		// BaselineSequence(os.Args[i])
+// 	}
+// }
+
+// ==================================================================
+func main() {
+	encoder.Encode()
 }
