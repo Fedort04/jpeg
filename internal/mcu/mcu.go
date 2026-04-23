@@ -24,8 +24,8 @@ var idctTable [8][8]float64 = [8][8]float64{
 	{0.195090, -0.555570, 0.831470, -0.980785, 0.980785, -0.831470, 0.555570, -0.195090},
 }
 
-const UnitRowCount = 8 //Количество строк в data unit
-const UnitColCount = 8 //Количество столбцов в data unit
+const UnitRowCount = 8 //Количество строк в mcu
+const UnitColCount = 8 //Количество столбцов в mcu
 
 type Channel byte
 

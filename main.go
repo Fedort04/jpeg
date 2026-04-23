@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"jpeg/decoder"
 	"jpeg/encoder"
+	"jpeg/shared"
 	"log"
 	"os"
 	"path/filepath"
@@ -43,7 +44,7 @@ func ProgressiveExample(filename string) {
 		return
 	}
 
-	res := decoder.CreateRGBMatrix(jpeg.ImageHeight, jpeg.ImageWidth)
+	res := shared.CreateMatrix[shared.Rgb](int(jpeg.ImageHeight), int(jpeg.ImageWidth))
 
 	flag := false
 	for !flag {
@@ -74,7 +75,7 @@ func ProgressiveSequence(filename string) {
 		return
 	}
 
-	res := decoder.CreateRGBMatrix(jpeg.ImageHeight, jpeg.ImageWidth)
+	res := shared.CreateMatrix[shared.Rgb](int(jpeg.ImageHeight), int(jpeg.ImageWidth))
 
 	flag := false
 	count := 1
@@ -109,7 +110,7 @@ func BaselineExample(filename string) {
 		return
 	}
 
-	res := decoder.CreateRGBMatrix(jpeg.ImageHeight, jpeg.ImageWidth)
+	res := shared.CreateMatrix[shared.Rgb](int(jpeg.ImageHeight), int(jpeg.ImageWidth))
 
 	flag := false
 	for !flag {
@@ -140,7 +141,7 @@ func BaselineSequence(filename string) {
 		return
 	}
 
-	res := decoder.CreateRGBMatrix(jpeg.ImageHeight, jpeg.ImageWidth)
+	res := shared.CreateMatrix[shared.Rgb](int(jpeg.ImageHeight), int(jpeg.ImageWidth))
 
 	flag := false
 	count := 1
@@ -157,15 +158,15 @@ func BaselineSequence(filename string) {
 	}
 }
 
-// Обычное чтение всего изображения сразу
-func Common(files []string) {
+// Чтение нескольких изображений с записью в .bmp
+func CommonAll(files []string) {
 	var err error
 
 	for i := 1; i < len(files); i++ {
 		file, _ := os.Open(files[i])
 		jpeg, _ := decoder.ReadJPEG(bufio.NewReader(file))
 
-		res := decoder.CreateRGBMatrix(jpeg.ImageHeight, jpeg.ImageWidth)
+		res := shared.CreateMatrix[shared.Rgb](int(jpeg.ImageHeight), int(jpeg.ImageWidth))
 
 		if jpeg.IsProgressive {
 			log.Print("Progressive " + files[i])
@@ -184,6 +185,32 @@ func Common(files []string) {
 	}
 }
 
+// Обычное чтение всего изображения сразу
+func Common(files string) shared.Image {
+	var err error
+
+	file, _ := os.Open(files)
+	jpeg, _ := decoder.ReadJPEG(bufio.NewReader(file))
+
+	res := shared.CreateMatrix[shared.Rgb](int(jpeg.ImageHeight), int(jpeg.ImageWidth))
+
+	if jpeg.IsProgressive {
+		log.Print("Progressive " + files)
+		_, err = jpeg.ReadProgJPEG(res, 0)
+	} else {
+		log.Print("Baseline " + files)
+		_, err = jpeg.ReadBaseJPEG(res, 0)
+	}
+
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+	// filename, _ := decoder.JpegNameToBmp(files[i], 0)
+	// decoder.EncodeBMP(res, filename)
+	return res
+}
+
 // Для декодера
 // func main() {
 // 	if len(os.Args) < 2 {
@@ -191,14 +218,31 @@ func Common(files []string) {
 // 		return
 // 	}
 
-// 	Common(os.Args)
-// 	for i := 1; i < len(os.Args); i++ {
-// 		// ProgressiveSequence(os.Args[i])
-// 		// BaselineSequence(os.Args[i])
-// 	}
+// 	CommonAll(os.Args)
+// 	// for i := 1; i < len(os.Args); i++ {
+// 	// ProgressiveSequence(os.Args[i])
+// 	// BaselineSequence(os.Args[i])
+// 	// }
 // }
 
 // ==================================================================
 func main() {
-	encoder.Encode()
+	if len(os.Args) < 2 {
+		log.Print("Введите путь к файлу в параметрах\n")
+		return
+	}
+
+	file, err := os.Create("result1.jpg")
+	if err != nil {
+		log.Print("WTF")
+		return
+	}
+	writer := bufio.NewWriter(file)
+
+	image := Common(os.Args[1])
+	quantY := encoder.CreateOneTable()
+	quantColor := encoder.CreateOneTable()
+
+	encoder, _ := encoder.CreateEncoder(writer, image, quantY, quantColor)
+	encoder.StartProgressive(10)
 }

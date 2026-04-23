@@ -7,8 +7,8 @@ import (
 	binreader "jpeg/decoder/binReader"
 	binwriter "jpeg/decoder/binWriter"
 	"jpeg/decoder/huffman"
-	"jpeg/internal/constants"
 	"jpeg/internal/mcu"
+	"jpeg/shared"
 	"log"
 	"path/filepath"
 	"strconv"
@@ -31,31 +31,31 @@ type Decoder struct {
 	IsProgressive bool   //Флаг для прогрессивного декодирования
 	CurStatus     uint16 //Текущее состояние чтения
 
-	reader             *binreader.BinReader                      //Объект для чтения файла
-	blocks             [][]mcu.MCU                               //Текущие матрицы с коэф из ДКП
-	quantTables        [constants.NumOfTables][]byte             //Массив с таблицами квантования
-	acTables           [constants.NumOfTables]*huffman.HuffTable //Массив с AC таблицами Хаффмана
-	dcTables           [constants.NumOfTables]*huffman.HuffTable //Массив с DC таблицами Хаффмана
-	samplePrecision    byte                                      //Глубина цвета
-	maxH               byte                                      //Максимальный Н фактор
-	maxV               byte                                      //Максимальный V фактор
-	numOfComps         byte                                      //Количество цветовых компонет в изображении
-	comps              [constants.MaxComps]component             //Массив с данными о компонентах
-	restartInterval    uint16                                    //Интервал перезапуска дельта кодирования
-	startSpectral      byte                                      //Начало spectral selection для текущего скана
-	endSpectral        byte                                      //Конец spectral selection для текущего скана
-	saHigh             byte                                      //Предыдущий бит для аппроксимации компоненты для текущего скана
-	saLow              byte                                      //Текущий бит для аппроксимации компоненты для текущего скана
-	numOfMCUHeight     uint16                                    //Количество MCU в изображении по высоте
-	numOfMCUWidth      uint16                                    //Количество MCU в изображении по ширине
-	numOfMCUHeightReal uint16                                    //Реальное количество MCU в изображении по высоте
-	numOfMCUWidthReal  uint16                                    //Реальное количество MCU в изображении по ширине
-	numBlocksHeight    uint16                                    //Количество блоков subsample по высоте
-	numBlocksWidth     uint16                                    //Количество блоков subsample по ширине
-	blockCount         uint                                      //Общее количество прочитанных блоков mcu
-	wasEOI             bool                                      //Флаг завершения чтения
-	readError          error                                     //Ошибка при декодировании
-	img                constants.Image                           //Результирующее изображение
+	reader             *binreader.BinReader                   //Объект для чтения файла
+	blocks             [][]mcu.MCU                            //Текущие матрицы с коэф из ДКП
+	quantTables        [shared.NumOfTables][]byte             //Массив с таблицами квантования
+	acTables           [shared.NumOfTables]*huffman.HuffTable //Массив с AC таблицами Хаффмана
+	dcTables           [shared.NumOfTables]*huffman.HuffTable //Массив с DC таблицами Хаффмана
+	samplePrecision    byte                                   //Глубина цвета
+	maxH               byte                                   //Максимальный Н фактор
+	maxV               byte                                   //Максимальный V фактор
+	numOfComps         byte                                   //Количество цветовых компонет в изображении
+	comps              [shared.MaxComps]component             //Массив с данными о компонентах
+	restartInterval    uint16                                 //Интервал перезапуска дельта кодирования
+	startSpectral      byte                                   //Начало spectral selection для текущего скана
+	endSpectral        byte                                   //Конец spectral selection для текущего скана
+	saHigh             byte                                   //Предыдущий бит для аппроксимации компоненты для текущего скана
+	saLow              byte                                   //Текущий бит для аппроксимации компоненты для текущего скана
+	numOfMCUHeight     uint16                                 //Количество MCU в изображении по высоте
+	numOfMCUWidth      uint16                                 //Количество MCU в изображении по ширине
+	numOfMCUHeightReal uint16                                 //Реальное количество MCU в изображении по высоте
+	numOfMCUWidthReal  uint16                                 //Реальное количество MCU в изображении по ширине
+	numBlocksHeight    uint16                                 //Количество блоков subsample по высоте
+	numBlocksWidth     uint16                                 //Количество блоков subsample по ширине
+	blockCount         uint                                   //Общее количество прочитанных блоков mcu
+	wasEOI             bool                                   //Флаг завершения чтения
+	readError          error                                  //Ошибка при декодировании
+	img                shared.Image                           //Результирующее изображение
 }
 
 // Чтение маркера marker
@@ -78,12 +78,12 @@ func (jpeg *Decoder) readQuantTable() {
 	//До тех пор, пока следующий байт не будет маркером
 	tq := jpeg.reader.GetByte()
 
-	if tq > constants.NumOfTables-1 {
+	if tq > shared.NumOfTables-1 {
 		jpeg.readError = errors.New("Segment reading error: Quant table invalid table destination")
 		return
 	}
 
-	table := jpeg.reader.GetArray(constants.SizeOfTable)
+	table := jpeg.reader.GetArray(shared.SizeOfTable)
 	jpeg.quantTables[tq] = table
 }
 
@@ -97,16 +97,16 @@ func (jpeg *Decoder) readRestartInterval() {
 func (jpeg *Decoder) readTables() uint16 {
 	marker := jpeg.reader.GetWord()
 	isContinue := false
-	if marker >= constants.APP0 && marker <= constants.APP15 {
+	if marker >= shared.APP0 && marker <= shared.APP15 {
 		jpeg.readApp()
 		isContinue = true
-	} else if marker == constants.DQT {
+	} else if marker == shared.DQT {
 		jpeg.readQuantTable()
 		isContinue = true
-	} else if marker == constants.DHT {
+	} else if marker == shared.DHT {
 		tc, th, huff, err := huffman.ReadHuffTable(jpeg.reader)
 		jpeg.readError = err
-		if th > constants.NumOfTables-1 {
+		if th > shared.NumOfTables-1 {
 			jpeg.readError = errors.New("Segment reading error: Huffman table invalid table destination")
 			return 0
 		}
@@ -121,7 +121,7 @@ func (jpeg *Decoder) readTables() uint16 {
 		}
 
 		isContinue = true
-	} else if marker == constants.DRI {
+	} else if marker == shared.DRI {
 		jpeg.readRestartInterval()
 		isContinue = true
 	}
@@ -148,14 +148,14 @@ func (jpeg *Decoder) readScanHeader() {
 	//Для каждой компоненты
 	for range ns {
 		cs := jpeg.reader.GetByte()
-		if cs > constants.NumOfChannels {
+		if cs > shared.NumOfChannels {
 			jpeg.readError = errors.New("Segment reading error: too much color channels")
 			return
 		}
 
 		td, ta := jpeg.reader.Get4Bit()
 
-		if td > constants.NumOfTables || ta > constants.NumOfTables {
+		if td > shared.NumOfTables || ta > shared.NumOfTables {
 			jpeg.readError = errors.New("Segment reading error: invalid huff-table channel ID")
 			return
 		}
@@ -186,7 +186,7 @@ func (jpeg *Decoder) readFrameHeader() {
 	jpeg.ImageWidth = jpeg.reader.GetWord()
 	jpeg.numOfComps = jpeg.reader.GetByte()
 
-	if jpeg.numOfComps > constants.NumOfChannels {
+	if jpeg.numOfComps > shared.NumOfChannels {
 		jpeg.readError = errors.New("Segment reading error: too much color channels")
 		return
 	}
@@ -217,10 +217,10 @@ func (jpeg *Decoder) readScans(iterCount uint16) bool {
 		temp := jpeg.CurStatus
 		for jpeg.CurStatus < temp+iterCount || readAll {
 			nextMarker := jpeg.readTables()
-			if nextMarker == constants.EOI {
+			if nextMarker == shared.EOI {
 				jpeg.wasEOI = true
 				break
-			} else if nextMarker != constants.SOS {
+			} else if nextMarker != shared.SOS {
 				jpeg.readError = errors.New("Scan reading error")
 				return false
 			}
@@ -237,7 +237,7 @@ func (jpeg *Decoder) readScans(iterCount uint16) bool {
 	} else if !jpeg.wasEOI { //Для Baseline
 		if jpeg.CurStatus == 0 {
 			nextMarker := jpeg.readTables()
-			if nextMarker != constants.SOS {
+			if nextMarker != shared.SOS {
 				jpeg.readError = errors.New("Scan reading error")
 				return false
 			}
@@ -257,9 +257,9 @@ func (jpeg *Decoder) readScans(iterCount uint16) bool {
 func (jpeg *Decoder) readFileHeader() {
 	nextMarker := jpeg.readTables()
 	switch nextMarker {
-	case constants.SOF0:
+	case shared.SOF0:
 		jpeg.IsProgressive = false
-	case constants.SOF2:
+	case shared.SOF2:
 		jpeg.IsProgressive = true
 	default:
 		jpeg.readError = errors.New("Decoder works only with Baseline and Progressive DCT-based JPEG")
@@ -270,7 +270,7 @@ func (jpeg *Decoder) readFileHeader() {
 
 // Чтение изображения на кол-во строк numOfRows
 // Возвращает true, если прочитано до конца
-func (jpeg *Decoder) ReadBaseJPEG(result constants.Image, numOfRows uint16) (bool, error) {
+func (jpeg *Decoder) ReadBaseJPEG(result shared.Image, numOfRows uint16) (bool, error) {
 	if jpeg.CurStatus == 0 {
 		jpeg.constInit()
 	}
@@ -288,7 +288,7 @@ func (jpeg *Decoder) ReadBaseJPEG(result constants.Image, numOfRows uint16) (boo
 
 // Чтение изображения на кол-во сканов numOfScans
 // Возвращает true, если прочитано до конца
-func (jpeg *Decoder) ReadProgJPEG(result constants.Image, numOfScans uint16) (bool, error) {
+func (jpeg *Decoder) ReadProgJPEG(result shared.Image, numOfScans uint16) (bool, error) {
 	if jpeg.CurStatus == 0 {
 		jpeg.constInit()
 	}
@@ -309,7 +309,7 @@ func ReadJPEG(source *bufio.Reader) (*Decoder, error) {
 	var res Decoder
 	res.reader = binreader.BinReaderInit(source)
 
-	if !res.readMarker(constants.SOI) {
+	if !res.readMarker(shared.SOI) {
 		return nil, errors.New("Image is not JPEG: can't read SOI marker")
 	}
 
@@ -324,7 +324,7 @@ func ReadJPEG(source *bufio.Reader) (*Decoder, error) {
 
 // =======================================
 // Кодирование в BMP для наглядности
-func EncodeBMP(img constants.Image, fileName string) {
+func EncodeBMP(img shared.Image, fileName string) {
 	err := binwriter.BinwriterInit(fileName)
 	if err != nil {
 		log.Panic(err.Error())

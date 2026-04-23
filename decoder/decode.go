@@ -4,31 +4,9 @@ import (
 	"errors"
 	binreader "jpeg/decoder/binReader"
 	"jpeg/decoder/huffman"
-	constants "jpeg/internal/constants"
 	"jpeg/internal/mcu"
-	"math"
+	"jpeg/shared"
 )
-
-const rgbDelta = 128 //Константа, которая прибавляется при переводе в RGB
-
-type yCbCrMatrix = [][]yCbCr
-
-// Структура для хранения данных в YCbCr формате
-type yCbCr struct {
-	y  float32
-	cb float32
-	cr float32
-}
-
-// Перевод в RGB пространство по указателю
-func (cur *yCbCr) toRGB(res *constants.Rgb) {
-	cur.y += rgbDelta
-	cur.cb += rgbDelta
-	cur.cr += rgbDelta
-	res.R = Clamp255(int(math.Round(float64(cur.y) + 1.402*float64((float64(cur.cr)-rgbDelta)))))
-	res.G = Clamp255(int(math.Round(float64(cur.y) - 0.34414*float64((float64(cur.cb)-rgbDelta)) - 0.71414*float64((float64(cur.cr)-rgbDelta)))))
-	res.B = Clamp255(int(math.Round(float64(cur.y) + 1.772*float64((float64(cur.cb)-rgbDelta)))))
-}
 
 var bandSkips uint16 //Счетчик пропусков вычислений в progressive
 var prev []int16     //Предыдущие значения DC для дельта кодирования
@@ -36,36 +14,6 @@ var prev []int16     //Предыдущие значения DC для дель�
 // Переменные для AC refinement
 var positiveBit int16
 var negativeBit int16
-
-// Создание пустого изображения RGB
-func CreateRGBMatrix(height uint16, width uint16) constants.Image {
-	res := make([][]constants.Rgb, height)
-	for i := range height {
-		res[i] = make([]constants.Rgb, width)
-	}
-	return res
-}
-
-// Создание yCbCrMatrix
-func createYCbCrMatrix(height byte, width byte) yCbCrMatrix {
-	res := make([][]yCbCr, height)
-	for i := range height {
-		res[i] = make([]yCbCr, width)
-	}
-	return res
-}
-
-// Создание пустого блока размерами [height][width] из MCU(8х8) в YCbCr
-func createYCbCrBlock(height byte, width byte) [][]yCbCrMatrix {
-	res := make([][]yCbCrMatrix, height)
-	for i := range height {
-		res[i] = make([]yCbCrMatrix, width)
-		for j := range width {
-			res[i][j] = createYCbCrMatrix(mcu.UnitRowCount, mcu.UnitColCount)
-		}
-	}
-	return res
-}
 
 // Вычисление тех переменных, которые нужны при сканах, но вычисляются единожды
 func (jpeg *Decoder) constInit() {
@@ -98,7 +46,7 @@ func (jpeg *Decoder) restart() {
 }
 
 // Декодирование символа EOB
-func DecodeEndOfBand(b *binreader.BinReader, count byte) uint16 {
+func decodeEndOfBand(b *binreader.BinReader, count byte) uint16 {
 	var ans uint16
 	ans = 1 << count
 	ans += b.GetBits(count)
@@ -161,7 +109,7 @@ func (jpeg *Decoder) decodeAC(unit []int16, huff *huffman.HuffTable) {
 
 		if small == 0 {
 			if big != 15 {
-				bandSkips = DecodeEndOfBand(jpeg.reader, big)
+				bandSkips = decodeEndOfBand(jpeg.reader, big)
 				bandSkips--
 				return
 			} else {
@@ -180,19 +128,6 @@ func (jpeg *Decoder) decodeAC(unit []int16, huff *huffman.HuffTable) {
 	}
 }
 
-// Проверка в диапазоне 0-255
-func Clamp255(val int) byte {
-	min := 0
-	max := 255
-	if val < min {
-		return byte(min)
-	}
-	if val > max {
-		return byte(max)
-	}
-	return byte(val)
-}
-
 // Декодирование data unit
 func (jpeg *Decoder) decodeDataUnit(channel int) []int16 {
 	temp := make([]int16, mcu.UnitRowCount*mcu.UnitColCount)
@@ -204,9 +139,9 @@ func (jpeg *Decoder) decodeDataUnit(channel int) []int16 {
 // Выполнение рестарта дельта кодирвоания
 func (jpeg *Decoder) makeRestart() bool {
 	marker := jpeg.reader.GetWord()
-	if marker == constants.EOI {
+	if marker == shared.EOI {
 		return true
-	} else if marker >= constants.RST0 && marker <= constants.RST7 {
+	} else if marker >= shared.RST0 && marker <= shared.RST7 {
 		jpeg.reader.BitsAlign()
 		jpeg.restart()
 		return true
@@ -397,7 +332,7 @@ func (jpeg *Decoder) decodeProgressiveAC() {
 						switch low {
 						case 0:
 							if high != 15 {
-								bandSkips = DecodeEndOfBand(jpeg.reader, high)
+								bandSkips = decodeEndOfBand(jpeg.reader, high)
 								k = jpeg.RefinementZeroSkip(arr, mcu.UnitRowCount*mcu.UnitColCount, k, jpeg.endSpectral)
 								bandSkips--
 							} else {
@@ -450,7 +385,7 @@ func (jpeg *Decoder) decodeProgressiveScan() bool {
 
 // Вычисление YCbCr для канала ch
 // x y - координаты левого верхнего MCU в блоке
-func (jpeg *Decoder) componentCalc(x uint, y uint, res [][]yCbCrMatrix, ch mcu.Channel, readAll bool) {
+func (jpeg *Decoder) componentCalc(x uint, y uint, res [][]shared.YCbCrMatrix, ch mcu.Channel, readAll bool) {
 	// Перевод в YCbCr
 	for curV := range uint16(jpeg.comps[ch].v) {
 		for curH := range uint16(jpeg.comps[ch].h) {
@@ -478,11 +413,11 @@ func (jpeg *Decoder) componentCalc(x uint, y uint, res [][]yCbCrMatrix, ch mcu.C
 
 					switch ch {
 					case mcu.Y:
-						res[curV+vPadding][curH+hPadding][x%mcu.UnitRowCount][y%mcu.UnitColCount].y = unit[x/scalingX][y/scalingY]
+						res[curV+vPadding][curH+hPadding][x%mcu.UnitRowCount][y%mcu.UnitColCount].Y = unit[x/scalingX][y/scalingY]
 					case mcu.Cb:
-						res[curV+vPadding][curH+hPadding][x%mcu.UnitRowCount][y%mcu.UnitColCount].cb = unit[x/scalingX][y/scalingY]
+						res[curV+vPadding][curH+hPadding][x%mcu.UnitRowCount][y%mcu.UnitColCount].Cb = unit[x/scalingX][y/scalingY]
 					case mcu.Cr:
-						res[curV+vPadding][curH+hPadding][x%mcu.UnitRowCount][y%mcu.UnitColCount].cr = unit[x/scalingX][y/scalingY]
+						res[curV+vPadding][curH+hPadding][x%mcu.UnitRowCount][y%mcu.UnitColCount].Cr = unit[x/scalingX][y/scalingY]
 					}
 				}
 			}
@@ -492,10 +427,10 @@ func (jpeg *Decoder) componentCalc(x uint, y uint, res [][]yCbCrMatrix, ch mcu.C
 
 // Копирование в результат информации из блока YCbCrMatrix
 // x y - координаты левого верхнего угла блока в результате
-func (jpeg *Decoder) copyToRes(curMatrix yCbCrMatrix, res [][]constants.Rgb, x int, y int) {
+func (jpeg *Decoder) copyToRes(curMatrix shared.YCbCrMatrix, res [][]shared.Rgb, x int, y int) {
 	for i := 0; i < len(curMatrix) && x+i < int(jpeg.ImageHeight); i++ {
 		for j := 0; j < len(curMatrix[0]) && y+j < int(jpeg.ImageWidth); j++ {
-			curMatrix[i][j].toRGB(&res[x+i][y+j])
+			curMatrix[i][j].ToRGB(&res[x+i][y+j])
 		}
 	}
 }
@@ -517,7 +452,7 @@ func (jpeg *Decoder) rgbCalc(readAll bool, startRow int, endRow int) {
 			mcuRow := row * int(jpeg.maxV) // Номер текущего MCU
 			mcuCol := col * int(jpeg.maxH) // Номер текущего MCU
 
-			curBlock := createYCbCrBlock(jpeg.maxV, jpeg.maxH)
+			curBlock := shared.CreateYCbCrBlock(jpeg.maxV, jpeg.maxH)
 
 			for c := range jpeg.numOfComps {
 				jpeg.componentCalc(uint(mcuRow), uint(mcuCol), curBlock, mcu.Channel(c), readAll)
