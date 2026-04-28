@@ -5,6 +5,12 @@ import (
 	"math"
 )
 
+type Number interface {
+	~int | ~int8 | ~int16 | ~int32 | ~int64 |
+		~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 |
+		~float32 | ~float64
+}
+
 type Image = [][]Rgb
 
 // Структура для хранения данных в RGB формате
@@ -89,6 +95,57 @@ func CreateYCbCrBlock(height byte, width byte) [][]YCbCrMatrix {
 	return res
 }
 
+// Копирует данные матрицы src в матрицу dst
+func CopyToMatrix[T any](src [][]T, dst *[][]T) {
+	if src == nil {
+		*dst = nil
+		return
+	}
+
+	newMatrix := make([][]T, len(src))
+
+	for i := range len(src) {
+		if src[i] != nil {
+			newMatrix[i] = make([]T, len(src[i]))
+			copy(newMatrix[i], src[i])
+		} else {
+			newMatrix[i] = nil
+		}
+	}
+
+	*dst = newMatrix
+}
+
+// Вычисление среднего значения двух чисел
+func Average[T Number](a, b T) T {
+	return T(float64(a+b) / 2)
+}
+
+// @todo полезный, но сука не подходит((
+// Копирует данные части src в dst
+// hPos; vPos характеризуют верхний левый угол части, а height; width размер части
+// func CopyPartToMatrix[T any, M constraints.Integer](dst *[][]T, src [][]T, hPos M, vPos M, height M, width M) error {
+// 	if src == nil {
+// 		*dst = nil
+// 		return errors.New("src is nil")
+// 	}
+
+// 	newMatrix := make([][]T, height)
+
+// 	for i := range height {
+// 		if src[hPos+i] != nil {
+// 			newMatrix[i] = make([]T, width)
+
+// 			for j := range width {
+// 				newMatrix[i][j] = src[hPos+i][vPos+j]
+// 			}
+// 		} else {
+// 			return errors.New("Index height range out of src array")
+// 		}
+// 	}
+// 	return nil
+// }
+
 // Маркеры всех используемых заголовков
 const (
 	SOI   uint16 = 0xFFD8
@@ -108,5 +165,5 @@ const (
 const NumOfTables = 4   //Максимальное количество таблиц
 const NumOfChannels = 3 //Максимальное количество цветовых компонент
 const MaxComps = 3      //Максимальное количество компонент
-const MinMatrixSize = 8 //Размерность mcu
-const SizeOfTable = 64  //Количество элементов в одной таблице квантования
+// const MinMatrixSize = 8 //Размерность mcu
+const SizeOfTable = 64 //Количество элементов в одной таблице квантования

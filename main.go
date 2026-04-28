@@ -218,7 +218,8 @@ func Common(files string) shared.Image {
 // 		return
 // 	}
 
-// 	CommonAll(os.Args)
+// 	// CommonAll(os.Args)
+// 	Common(os.Args[1])
 // 	// for i := 1; i < len(os.Args); i++ {
 // 	// ProgressiveSequence(os.Args[i])
 // 	// BaselineSequence(os.Args[i])
