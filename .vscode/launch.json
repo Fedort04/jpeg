@@ -11,7 +11,7 @@
             "mode": "auto",
             "program": "${workspaceFolder}",
             "args": [
-                "decoder/pics/Progressive/Aida.jpg"
+                "decoder/pics/Baseline/Aika.jpg"
             ]
         }
     ]

@@ -5,28 +5,15 @@ import (
 	"jpeg/shared"
 )
 
-// Структура для хранения и обработки одной матрицы данных
-type componentMatrix struct {
-	data [][]float32
-}
-
-// Структура для хранеия и обработки одного блока subsample данных
-// Содержит сырые данные после subsample для baseline кодирования
-type block struct {
-	y  [][]componentMatrix
-	cb componentMatrix
-	cr componentMatrix
-}
-
 // Перевод изображения в YCbCr с расширением изображения до кратного subsample размера
-func (jpeg *Encoder) convertToYCbCr() {
+func (jpeg *Encoder) convertToYCbCr() shared.YCbCrMatrix {
 	data := *jpeg.data
 
 	realHeight := uint16(len(data))
 	realWidth := uint16(len(data[0]))
 	jpeg.imgWidth = ((realWidth + uint16(jpeg.blockHSize) - 1) / uint16(jpeg.blockHSize)) * uint16(jpeg.blockHSize)
 	jpeg.imgHeight = ((realHeight + uint16(jpeg.blockVSize) - 1) / uint16(jpeg.blockVSize)) * uint16(jpeg.blockVSize)
-	jpeg.img = shared.CreateMatrix[shared.YCbCr](int(jpeg.imgHeight), int(jpeg.imgWidth))
+	img := shared.CreateMatrix[shared.YCbCr](int(jpeg.imgHeight), int(jpeg.imgWidth))
 
 	var realI, realJ uint16
 	for i := range jpeg.imgHeight {
@@ -43,11 +30,10 @@ func (jpeg *Encoder) convertToYCbCr() {
 				realJ = j
 			}
 			//@todo здесь подумать над оптимизацией вычислений
-			data[realI][realJ].ToYCbCr(&jpeg.img[i][j])
+			data[realI][realJ].ToYCbCr(&img[i][j])
 		}
 	}
-	//@todo здесь подумать над правильным освобождением памяти
-	jpeg.data = nil
+	return img
 }
 
 // Вычисление значений факторов subsample по выбранному формату
@@ -92,7 +78,7 @@ type part struct {
 
 // Копирует данные части img в dst (вместе с использованием subsample)
 // dst матрица слайсов уже создана, просто заполняет значениями
-func (jpeg *Encoder) copyImgPartToMatrix(dst *componentMatrix, curPart part, channel mcu.Channel) {
+func (jpeg *Encoder) copyImgPartToMatrix(img shared.YCbCrMatrix, dst *mcu.RawMCU, curPart part, channel mcu.Channel) {
 	for i := range uint16(mcu.UnitRowCount) {
 		for j := range uint16(mcu.UnitColCount) {
 			// По глобальному изображению
@@ -100,7 +86,7 @@ func (jpeg *Encoder) copyImgPartToMatrix(dst *componentMatrix, curPart part, cha
 			curH := curPart.globalHPos + j
 			switch channel {
 			case mcu.Y:
-				dst.data[i][j] = jpeg.img[curV][curH].Y
+				dst.Data[i][j] = img[curV][curH].Y
 			case mcu.Cb, mcu.Cr:
 				// По текущему фрагменту
 				subJ := (j + uint16(curPart.hPos)*mcu.UnitColCount) / uint16(jpeg.maxH)
@@ -110,11 +96,11 @@ func (jpeg *Encoder) copyImgPartToMatrix(dst *componentMatrix, curPart part, cha
 				if remainI == 0 && remainJ == 0 {
 					var value float32
 					if channel == mcu.Cb {
-						value = jpeg.img[curV][curH].Cb
+						value = img[curV][curH].Cb
 					} else {
-						value = jpeg.img[curV][curH].Cr
+						value = img[curV][curH].Cr
 					}
-					dst.data[subI][subJ] = value
+					dst.Data[subI][subJ] = value
 				}
 			}
 		}
@@ -122,24 +108,24 @@ func (jpeg *Encoder) copyImgPartToMatrix(dst *componentMatrix, curPart part, cha
 }
 
 // Chroma blockSubsample
-// Возвращает матрицу прореженных и структурирвованных под Baseline кодирвоание блоков
-func (jpeg *Encoder) blockSubsample() [][]block {
+// Возвращает матрицу прореженных и структурирвованных под Baseline кодирование блоков
+func (jpeg *Encoder) blockSubsample(img shared.YCbCrMatrix) [][]mcu.BlockRaw {
 	jpeg.numBlocksHeight = jpeg.imgHeight / uint16(jpeg.blockVSize)
 	jpeg.numBlocksWidth = jpeg.imgWidth / uint16(jpeg.blockHSize)
 
-	res := shared.CreateMatrix[block](int(jpeg.numBlocksHeight), int(jpeg.numBlocksWidth))
+	res := shared.CreateMatrix[mcu.BlockRaw](int(jpeg.numBlocksHeight), int(jpeg.numBlocksWidth))
 
 	// Для каждого блока
 	for blockI := range jpeg.numBlocksHeight {
 		for blockJ := range jpeg.numBlocksWidth {
-			var curBlock block
+			var curBlock mcu.BlockRaw
 
 			globalVPos := blockI * uint16(jpeg.blockVSize)
 			globalHPos := blockJ * uint16(jpeg.blockHSize)
 
-			curBlock.y = shared.CreateMatrix[componentMatrix](int(jpeg.maxV), int(jpeg.maxH))
-			curBlock.cb.data = shared.CreateMatrix[float32](mcu.UnitRowCount, mcu.UnitColCount)
-			curBlock.cr.data = shared.CreateMatrix[float32](mcu.UnitRowCount, mcu.UnitColCount)
+			curBlock.Y = shared.CreateMatrix[mcu.RawMCU](int(jpeg.maxV), int(jpeg.maxH))
+			curBlock.Cb.Data = shared.CreateMatrix[float32](mcu.UnitRowCount, mcu.UnitColCount)
+			curBlock.Cr.Data = shared.CreateMatrix[float32](mcu.UnitRowCount, mcu.UnitColCount)
 
 			for i := range uint16(jpeg.maxV) {
 				for j := range uint16(jpeg.maxH) {
@@ -149,16 +135,27 @@ func (jpeg *Encoder) blockSubsample() [][]block {
 					curPart := part{globalVPos: curVPos, globalHPos: curHpos, vPos: byte(i), hPos: byte(j)}
 
 					// Обработка Y
-					curBlock.y[i][j].data = shared.CreateMatrix[float32](mcu.UnitRowCount, mcu.UnitColCount)
-					jpeg.copyImgPartToMatrix(&curBlock.y[i][j], curPart, mcu.Channel(mcu.Y))
+					curBlock.Y[i][j].Data = shared.CreateMatrix[float32](mcu.UnitRowCount, mcu.UnitColCount)
+					jpeg.copyImgPartToMatrix(img, &curBlock.Y[i][j], curPart, mcu.Channel(mcu.Y))
 
 					// Обработка Cb и Cr
-					jpeg.copyImgPartToMatrix(&curBlock.cb, curPart, mcu.Channel(mcu.Cb))
-					jpeg.copyImgPartToMatrix(&curBlock.cr, curPart, mcu.Channel(mcu.Cr))
+					jpeg.copyImgPartToMatrix(img, &curBlock.Cb, curPart, mcu.Channel(mcu.Cb))
+					jpeg.copyImgPartToMatrix(img, &curBlock.Cr, curPart, mcu.Channel(mcu.Cr))
 				}
 			}
 
 			res[blockI][blockJ] = curBlock
+		}
+	}
+	return res
+}
+
+// Преобразование в вид, пригодный для кодирования
+func (jpeg *Encoder) zigZag(blocks [][]mcu.BlockRaw) [][]mcu.CodingBlock {
+	res := shared.CreateMatrix[mcu.CodingBlock](len(blocks), len(blocks[0]))
+	for i, row := range blocks {
+		for j, elm := range row {
+			res[i][j] = elm.ZigZag(jpeg.maxH, jpeg.maxV)
 		}
 	}
 	return res

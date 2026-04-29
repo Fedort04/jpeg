@@ -121,7 +121,25 @@ func Average[T Number](a, b T) T {
 	return T(float64(a+b) / 2)
 }
 
-// @todo полезный, но сука не подходит((
+// Умножение каждого элемента матрицы на число
+func MultMatrixOnNumber[T Number](matrix [][]T, number T) {
+	for i := range len(matrix) {
+		for j := range len(matrix[i]) {
+			matrix[i][j] *= number
+		}
+	}
+}
+
+// map функция для матрицы. Применяет f() к каждому элементу матрицы
+func MatrixMap[T any](matrix [][]T, f func(elm *T)) {
+	for _, row := range matrix {
+		for _, elm := range row {
+			f(&elm)
+		}
+	}
+}
+
+// @todo полезный, но не подходит((
 // Копирует данные части src в dst
 // hPos; vPos характеризуют верхний левый угол части, а height; width размер части
 // func CopyPartToMatrix[T any, M constraints.Integer](dst *[][]T, src [][]T, hPos M, vPos M, height M, width M) error {

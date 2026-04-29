@@ -245,5 +245,5 @@ func main() {
 	quantColor := encoder.CreateOneTable()
 
 	encoder, _ := encoder.CreateEncoder(writer, image, quantY, quantColor)
-	encoder.StartProgressive(10)
+	encoder.StartBaseline(10000)
 }

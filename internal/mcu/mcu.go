@@ -1,5 +1,7 @@
 package mcu
 
+import "math"
+
 // Последовательность зиг-зага
 var zigZagTable [8][8]byte = [8][8]byte{
 	{0, 1, 5, 6, 14, 15, 27, 28},
@@ -11,6 +13,8 @@ var zigZagTable [8][8]byte = [8][8]byte{
 	{21, 34, 37, 47, 50, 56, 59, 61},
 	{35, 36, 48, 49, 57, 58, 62, 63},
 }
+
+const DCTQuantCoeff = 4 // Коэффициент для таблиц квантования
 
 // Таблица с коэффициентами в ОДКП
 var idctTable [8][8]float64 = [8][8]float64{
@@ -136,4 +140,116 @@ func (unit *MCU) InverseCosin(ch Channel) [][]float32 {
 	default:
 		return nil
 	}
+}
+
+// Один MCU в сыром виде
+type RawMCU struct {
+	Data [][]float32
+}
+
+// Дискретно-косинусное преобразование над одной MCU
+func (mcu *RawMCU) dct() {
+	for i := range UnitRowCount {
+		for j := range UnitColCount {
+			mcu.Data[i][j] -= 128.0
+		}
+	}
+
+	var tmp [UnitRowCount][UnitColCount]float64
+
+	for row := range UnitRowCount {
+		for u := range UnitColCount {
+			var sum float64
+			for col, val := range mcu.Data[row] {
+				sum += float64(val) * idctTable[u][col]
+			}
+			tmp[row][u] = sum
+		}
+	}
+
+	for v := range UnitRowCount {
+		for u := range UnitColCount {
+			var sum float64
+			for row := range UnitRowCount {
+				sum += tmp[row][u] * idctTable[v][row]
+			}
+			mcu.Data[v][u] = float32(math.Round(sum))
+		}
+	}
+}
+
+// Квантование сырых данных
+func (mcu *RawMCU) quantization(quantTable [][]byte) {
+	for i, row := range mcu.Data {
+		for j, elm := range row {
+			mcu.Data[i][j] = float32(math.Round(float64(elm / float32(quantTable[i][j]))))
+		}
+	}
+}
+
+// Применение зиг-заг преобразования над данными после ДКП
+func (mcu *RawMCU) zigZag() []int16 {
+	result := make([]int16, UnitRowCount*UnitColCount)
+	for row := range UnitRowCount {
+		for col := range UnitColCount {
+			idx := zigZagTable[row][col]
+			result[idx] = int16(mcu.Data[row][col])
+		}
+	}
+	return result
+}
+
+// Структура для хранеия и обработки одного блока subsample данных
+// Содержит сырые данные после subsample для baseline кодирования
+type BlockRaw struct {
+	Y  [][]RawMCU
+	Cb RawMCU
+	Cr RawMCU
+}
+
+// Дискретно-косинусное преобразование над блоком MCU
+func (block *BlockRaw) DCT() {
+	for _, arr := range block.Y {
+		for _, elm := range arr {
+			elm.dct()
+		}
+	}
+	block.Cb.dct()
+	block.Cr.dct()
+}
+
+// Квантование блока MCU
+func (block *BlockRaw) Quantization(tableY [][]byte, tableColor [][]byte) {
+	for _, arr := range block.Y {
+		for _, elm := range arr {
+			elm.quantization(tableY)
+		}
+	}
+	block.Cb.quantization(tableColor)
+	block.Cr.quantization(tableColor)
+}
+
+// Зиг-заг преобразование для всего блока
+func (block *BlockRaw) ZigZag(maxH byte, maxV byte) CodingBlock {
+	var res CodingBlock
+	res.Y = make([][]int16, maxH*maxV)
+
+	temp := byte(0)
+	for _, arr := range block.Y {
+		for _, elm := range arr {
+			res.Y[temp] = elm.zigZag()
+			temp++
+		}
+	}
+	res.Cb = block.Cb.zigZag()
+	res.Cr = block.Cr.zigZag()
+
+	return res
+}
+
+// Блок, подготовленный для кодирования
+type CodingBlock struct {
+	Y  [][]int16
+	Cb []int16
+	Cr []int16
 }

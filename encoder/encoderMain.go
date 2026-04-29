@@ -29,22 +29,21 @@ type Encoder struct {
 	Capprox   byte   //Аппроксимация цвета (по умолчанию 1)
 
 	//private:
-	data            *shared.Image      //Данные изображения
-	imgHeight       uint16             //Высота изображения
-	imgWidth        uint16             //Ширина изображения
-	quantTableY     [][]byte           //Таблица квантования для яркости
-	quantTableColor [][]byte           //Таблица квантования для цвета
-	yh              byte               //Горизонтальный фактор яркости
-	yv              byte               //Вертикальный фактор яркости
-	ch              byte               //Горизонтальный фактор цвета
-	cv              byte               //Вертикальный фактор цвета
-	maxH            byte               //Максимальный H фактор
-	maxV            byte               //Максимальный V фактор
-	numBlocksHeight uint16             //Количество блоков mcu в изображении по высоте
-	numBlocksWidth  uint16             //Количество блоков mcu в изображении по ширине
-	blockVSize      byte               //Размер блока по вертикали
-	blockHSize      byte               //Размер блока по горизонтали
-	img             shared.YCbCrMatrix //Изображение в виде YCbCr
+	data            *shared.Image //Данные изображения
+	imgHeight       uint16        //Высота изображения
+	imgWidth        uint16        //Ширина изображения
+	quantTableY     [][]byte      //Таблица квантования для яркости
+	quantTableColor [][]byte      //Таблица квантования для цвета
+	yh              byte          //Горизонтальный фактор яркости
+	yv              byte          //Вертикальный фактор яркости
+	ch              byte          //Горизонтальный фактор цвета
+	cv              byte          //Вертикальный фактор цвета
+	maxH            byte          //Максимальный H фактор
+	maxV            byte          //Максимальный V фактор
+	numBlocksHeight uint16        //Количество блоков mcu в изображении по высоте
+	numBlocksWidth  uint16        //Количество блоков mcu в изображении по ширине
+	blockVSize      byte          //Размер блока по вертикали
+	blockHSize      byte          //Размер блока по горизонтали
 }
 
 // Конструктор объекта кодирования
@@ -53,6 +52,8 @@ func CreateEncoder(dest *bufio.Writer, data shared.Image, quantTableY [][]byte, 
 	encoder.data = &data
 	shared.CopyToMatrix(quantTableY, &encoder.quantTableY)
 	shared.CopyToMatrix(quantTableColor, &encoder.quantTableColor)
+	shared.MultMatrixOnNumber(encoder.quantTableY, mcu.DCTQuantCoeff)
+	shared.MultMatrixOnNumber(encoder.quantTableColor, mcu.DCTQuantCoeff)
 	encoder.Format = Both
 	encoder.RestartInterval = 5
 	// Для прогрессива
@@ -65,14 +66,20 @@ func CreateEncoder(dest *bufio.Writer, data shared.Image, quantTableY [][]byte, 
 
 // По вызову функции выполняется Baseline кодирование
 func (encoder *Encoder) StartBaseline(numOfRows uint16) (bool, error) {
+	encoder.factorUpdate()
+	img := encoder.convertToYCbCr()
+	blocks := encoder.blockSubsample(img)
+	shared.MatrixMap(blocks, func(elm *mcu.BlockRaw) {
+		elm.DCT()
+		elm.Quantization(encoder.quantTableY, encoder.quantTableColor)
+	})
+	codingBlocks := encoder.zigZag(blocks)
+	print(codingBlocks)
 	return true, nil
 }
 
 // По вызову функции выполняется Progressive кодирование
 func (encoder *Encoder) StartProgressive(numOfScans byte) (bool, error) {
-	encoder.factorUpdate()
-	encoder.convertToYCbCr()
-	encoder.blockSubsample()
 	return true, nil
 }
 
