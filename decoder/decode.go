@@ -2,8 +2,8 @@ package decoder
 
 import (
 	"errors"
-	binreader "jpeg/decoder/binReader"
-	"jpeg/decoder/huffman"
+	binreader "jpeg/internal/binReader"
+	"jpeg/internal/huffman"
 	"jpeg/internal/mcu"
 	"jpeg/shared"
 )
@@ -63,24 +63,24 @@ func decodeSign(num int16, len byte) int16 {
 }
 
 // Декодирование DC элемента
-func (jpeg *Decoder) decodeDC(id int, huff *huffman.HuffTable) int16 {
+func (jpeg *Decoder) decodeDC(id int, huff *huffman.HuffTable) (int16, error) {
 	temp, err := huff.DecodeHuff(jpeg.reader)
 
 	if err != nil {
-		jpeg.readError = err
+		return 0, err
 	}
 
 	diff := decodeSign(int16(jpeg.reader.GetBits(byte(temp))), byte(temp))
 	res := diff + prev[id]
 	prev[id] = res
-	return res
+	return res, nil
 }
 
 // Декодирование AC элемента
-func (jpeg *Decoder) decodeAC(unit []int16, huff *huffman.HuffTable) {
+func (jpeg *Decoder) decodeAC(unit []int16, huff *huffman.HuffTable) error {
 	if bandSkips > 0 {
 		bandSkips--
-		return
+		return nil
 	}
 
 	unitLen := jpeg.endSpectral
@@ -96,22 +96,21 @@ func (jpeg *Decoder) decodeAC(unit []int16, huff *huffman.HuffTable) {
 		rs, err := huff.DecodeHuff(jpeg.reader)
 
 		if err != nil {
-			jpeg.readError = err
-			return
+			return err
 		}
 
 		big := byte(rs >> 4)
 		small := byte(rs & 0x0f)
 
 		if rs == 0x00 { //Special symbol 00
-			return
+			return nil
 		}
 
 		if small == 0 {
 			if big != 15 {
 				bandSkips = decodeEndOfBand(jpeg.reader, big)
 				bandSkips--
-				return
+				return nil
 			} else {
 				k += 15
 				continue
@@ -119,21 +118,29 @@ func (jpeg *Decoder) decodeAC(unit []int16, huff *huffman.HuffTable) {
 		} else {
 			k += big
 			if k > unitLen {
-				jpeg.readError = errors.New("Huffman bit-reading error: AC reading failed")
-				return
+				return errors.New("Huffman bit-reading error: AC reading failed")
 			}
 			bits := jpeg.reader.GetBits(small)
 			unit[k] = decodeSign(int16(bits), small) << int16(jpeg.saLow)
 		}
 	}
+	return nil
 }
 
 // Декодирование data unit
-func (jpeg *Decoder) decodeDataUnit(channel int) []int16 {
+func (jpeg *Decoder) decodeDataUnit(channel int) ([]int16, error) {
+	var err error
 	temp := make([]int16, mcu.UnitRowCount*mcu.UnitColCount)
-	temp[0] = jpeg.decodeDC(channel, jpeg.dcTables[jpeg.comps[channel].dcTableID])
-	jpeg.decodeAC(temp, jpeg.acTables[jpeg.comps[channel].acTableID])
-	return temp
+	temp[0], err = jpeg.decodeDC(channel, jpeg.dcTables[jpeg.comps[channel].dcTableID])
+	if err != nil {
+		return nil, err
+	}
+
+	if err = jpeg.decodeAC(temp, jpeg.acTables[jpeg.comps[channel].acTableID]); err != nil {
+		return nil, err
+	}
+
+	return temp, nil
 }
 
 // Выполнение рестарта дельта кодирвоания
@@ -146,42 +153,44 @@ func (jpeg *Decoder) makeRestart() bool {
 		jpeg.restart()
 		return true
 	}
-	jpeg.readError = errors.New("Huffman bit-reading error: make restart error")
 	return false
 }
 
 // Декодирование блока MCU Baseline
 // x y координаты левого верхнего MCU в блоке
-func (jpeg *Decoder) decodeBaselineBlock(x uint16, y uint16) bool {
+func (jpeg *Decoder) decodeBaselineBlock(x uint16, y uint16) error {
 	for i, comp := range jpeg.comps {
 		if !comp.used {
 			continue
 		}
 
+		var err error
 		for curV := range uint16(comp.v) {
 			for curH := range uint16(comp.h) {
 				switch i {
 				case int(mcu.Y):
-					jpeg.blocks[x+curV][y+curH].Y = jpeg.decodeDataUnit(i)
+					if jpeg.blocks[x+curV][y+curH].Y, err = jpeg.decodeDataUnit(i); err != nil {
+						return err
+					}
 				case int(mcu.Cb):
-					jpeg.blocks[x+curV][y+curH].Cb = jpeg.decodeDataUnit(i)
+					if jpeg.blocks[x+curV][y+curH].Cb, err = jpeg.decodeDataUnit(i); err != nil {
+						return err
+					}
 				case int(mcu.Cr):
-					jpeg.blocks[x+curV][y+curH].Cr = jpeg.decodeDataUnit(i)
-				}
-
-				if jpeg.readError != nil {
-					return false
+					if jpeg.blocks[x+curV][y+curH].Cr, err = jpeg.decodeDataUnit(i); err != nil {
+						return err
+					}
 				}
 			}
 		}
 	}
-	return true
+	return nil
 }
 
 // Baseline
 // Декодирование скана, blocks - ссылка на прочитанное к моменту вызова функции изображение
 // Возвращает номер строки блоков и номер строки в пикселях, на которых остановилось вычисление
-func (jpeg *Decoder) decodeBaselineScan(increment uint16) (uint16, bool) {
+func (jpeg *Decoder) decodeBaselineScan(increment uint16) (uint16, error) {
 	var row uint16 //Счетчик строк блоков MCU
 	var col uint16 //Счетчик столбцов блоков MCU
 
@@ -201,14 +210,13 @@ func (jpeg *Decoder) decodeBaselineScan(increment uint16) (uint16, bool) {
 	//Блоки в изображении с учетом subsample
 	for ; row < jpeg.numBlocksHeight && row < increment; row++ {
 		for col = range jpeg.numBlocksWidth {
-			if !jpeg.decodeBaselineBlock(row*uint16(jpeg.maxV), col*uint16(jpeg.maxH)) {
-				return 0, false
+			if err := jpeg.decodeBaselineBlock(row*uint16(jpeg.maxV), col*uint16(jpeg.maxH)); err != nil {
+				return 0, err
 			}
 
 			jpeg.blockCount++
 			if jpeg.restartInterval != 0 && jpeg.blockCount%uint(jpeg.restartInterval) == 0 && !jpeg.makeRestart() {
-				jpeg.readError = errors.New("Huffman bit-reading error: make restart error")
-				return 0, false
+				return 0, errors.New("Huffman bit-reading error: make restart error")
 			}
 		}
 	}
@@ -217,7 +225,7 @@ func (jpeg *Decoder) decodeBaselineScan(increment uint16) (uint16, bool) {
 		jpeg.wasEOI = true
 		jpeg.reader.HuffStreamEnd()
 	}
-	return row, true
+	return row, nil
 }
 
 // Пропуск нулей при refinement
@@ -246,22 +254,32 @@ func (jpeg *Decoder) RefinementZeroSkip(data []int16, zeros byte, startIndex byt
 
 // Декодирование блока MCU Progressive (используется только для DC)
 // x y координаты левого верхнего MCU в блоке
-func (jpeg *Decoder) decodeProgressiveDC(x uint16, y uint16) {
+func (jpeg *Decoder) decodeProgressiveDC(x uint16, y uint16) error {
 	for i, comp := range jpeg.comps {
 		if !comp.used {
 			continue
 		}
 
+		var err error
 		for curV := range uint16(comp.v) {
 			for curH := range uint16(comp.h) {
 				if jpeg.saHigh == 0 { // Первое чтение DC
 					switch i {
 					case int(mcu.Y):
-						jpeg.blocks[x+curV][y+curH].Y[0] = jpeg.decodeDC(i, jpeg.dcTables[comp.dcTableID]) << int16(jpeg.saLow)
+						if jpeg.blocks[x+curV][y+curH].Y[0], err = jpeg.decodeDC(i, jpeg.dcTables[comp.dcTableID]); err != nil {
+							return err
+						}
+						jpeg.blocks[x+curV][y+curH].Y[0] <<= int16(jpeg.saLow)
 					case int(mcu.Cb):
-						jpeg.blocks[x+curV][y+curH].Cb[0] = jpeg.decodeDC(i, jpeg.dcTables[comp.dcTableID]) << int16(jpeg.saLow)
+						if jpeg.blocks[x+curV][y+curH].Cb[0], err = jpeg.decodeDC(i, jpeg.dcTables[comp.dcTableID]); err != nil {
+							return err
+						}
+						jpeg.blocks[x+curV][y+curH].Cb[0] <<= int16(jpeg.saLow)
 					case int(mcu.Cr):
-						jpeg.blocks[x+curV][y+curH].Cr[0] = jpeg.decodeDC(i, jpeg.dcTables[comp.dcTableID]) << int16(jpeg.saLow)
+						if jpeg.blocks[x+curV][y+curH].Cr[0], err = jpeg.decodeDC(i, jpeg.dcTables[comp.dcTableID]); err != nil {
+							return err
+						}
+						jpeg.blocks[x+curV][y+curH].Cr[0] <<= int16(jpeg.saLow)
 					}
 				} else { // Повторное чтение DC
 					bit := jpeg.reader.GetBit()
@@ -277,10 +295,11 @@ func (jpeg *Decoder) decodeProgressiveDC(x uint16, y uint16) {
 			}
 		}
 	}
+	return nil
 }
 
 // Декодирование сканов AC
-func (jpeg *Decoder) decodeProgressiveAC() {
+func (jpeg *Decoder) decodeProgressiveAC() error {
 	for i, comp := range jpeg.comps {
 		if !comp.used {
 			continue
@@ -293,11 +312,17 @@ func (jpeg *Decoder) decodeProgressiveAC() {
 				if jpeg.saHigh == 0 { // Первое чтение AC
 					switch i {
 					case int(mcu.Y):
-						jpeg.decodeAC(jpeg.blocks[row][col].Y, jpeg.acTables[comp.acTableID])
+						if err := jpeg.decodeAC(jpeg.blocks[row][col].Y, jpeg.acTables[comp.acTableID]); err != nil {
+							return err
+						}
 					case int(mcu.Cb):
-						jpeg.decodeAC(jpeg.blocks[row][col].Cb, jpeg.acTables[comp.acTableID])
+						if err := jpeg.decodeAC(jpeg.blocks[row][col].Cb, jpeg.acTables[comp.acTableID]); err != nil {
+							return err
+						}
 					case int(mcu.Cr):
-						jpeg.decodeAC(jpeg.blocks[row][col].Cr, jpeg.acTables[comp.acTableID])
+						if err := jpeg.decodeAC(jpeg.blocks[row][col].Cr, jpeg.acTables[comp.acTableID]); err != nil {
+							return err
+						}
 					}
 				} else { // Повторное чтение AC
 					var arr []int16 // Указатель на текущий массив цвета
@@ -319,10 +344,8 @@ func (jpeg *Decoder) decodeProgressiveAC() {
 					for k := jpeg.startSpectral; k <= jpeg.endSpectral; k++ {
 
 						sym, err := jpeg.acTables[comp.acTableID].DecodeHuff(jpeg.reader)
-
 						if err != nil {
-							jpeg.readError = err
-							return
+							return err
 						}
 
 						high := byte(sym >> 4)
@@ -352,11 +375,12 @@ func (jpeg *Decoder) decodeProgressiveAC() {
 			}
 		}
 	}
+	return nil
 }
 
 // Progressive
 // Декодирование одного скана, blocks - ссылка на прочитанное к моменту вызова функции изображение
-func (jpeg *Decoder) decodeProgressiveScan() bool {
+func (jpeg *Decoder) decodeProgressiveScan() error {
 	jpeg.decodeInit()
 	defer jpeg.reader.HuffStreamEnd()
 
@@ -367,20 +391,21 @@ func (jpeg *Decoder) decodeProgressiveScan() bool {
 	if jpeg.startSpectral == 0 && jpeg.endSpectral == 0 { // Только для DC сканов
 		for row = range jpeg.numBlocksHeight {
 			for col = range jpeg.numBlocksWidth {
-				jpeg.decodeProgressiveDC(row*uint16(jpeg.maxV), col*uint16(jpeg.maxH))
+				if err := jpeg.decodeProgressiveDC(row*uint16(jpeg.maxV), col*uint16(jpeg.maxH)); err != nil {
+					return err
+				}
+
 				blockCount++
 				if jpeg.restartInterval != 0 && blockCount%uint(jpeg.restartInterval) == 0 && !jpeg.makeRestart() {
-					jpeg.readError = errors.New("Huffman bit-reading error: make restart error")
-					return false
-
+					return errors.New("Huffman bit-reading error: make restart error")
 				}
 			}
 		}
 	} else {
-		jpeg.decodeProgressiveAC()
+		return jpeg.decodeProgressiveAC()
 	}
 
-	return jpeg.readError == nil
+	return nil
 }
 
 // Вычисление YCbCr для канала ch

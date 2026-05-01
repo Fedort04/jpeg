@@ -94,8 +94,8 @@ func (unit *MCU) Dequant(quantTable []byte, ch Channel) {
 	}
 }
 
-// Зиг-заг преобразование
-func zigZag(unit []int16) [][]int16 {
+// Зиг-заг преобразование (в матрицу)
+func zigZagMatrix(unit []int16) [][]int16 {
 	//Создание матрицы
 	res := make([][]int16, UnitRowCount)
 	for i := range UnitRowCount {
@@ -132,11 +132,11 @@ func idctCalc(unit [][]int16) [][]float32 {
 func (unit *MCU) InverseCosin(ch Channel) [][]float32 {
 	switch ch {
 	case Y:
-		return idctCalc(zigZag(unit.Y))
+		return idctCalc(zigZagMatrix(unit.Y))
 	case Cb:
-		return idctCalc(zigZag(unit.Cb))
+		return idctCalc(zigZagMatrix(unit.Cb))
 	case Cr:
-		return idctCalc(zigZag(unit.Cr))
+		return idctCalc(zigZagMatrix(unit.Cr))
 	default:
 		return nil
 	}
@@ -187,13 +187,13 @@ func (mcu *RawMCU) quantization(quantTable [][]byte) {
 	}
 }
 
-// Применение зиг-заг преобразования над данными после ДКП
-func (mcu *RawMCU) zigZag() []int16 {
+// Зиг-заг преобразование (в строку)
+func zigZagRow(data [][]float32) []int16 {
 	result := make([]int16, UnitRowCount*UnitColCount)
 	for row := range UnitRowCount {
 		for col := range UnitColCount {
 			idx := zigZagTable[row][col]
-			result[idx] = int16(mcu.Data[row][col])
+			result[idx] = int16(data[row][col])
 		}
 	}
 	return result
@@ -237,12 +237,12 @@ func (block *BlockRaw) ZigZag(maxH byte, maxV byte) CodingBlock {
 	temp := byte(0)
 	for _, arr := range block.Y {
 		for _, elm := range arr {
-			res.Y[temp] = elm.zigZag()
+			res.Y[temp] = zigZagRow(elm.Data)
 			temp++
 		}
 	}
-	res.Cb = block.Cb.zigZag()
-	res.Cr = block.Cr.zigZag()
+	res.Cb = zigZagRow(block.Cb.Data)
+	res.Cr = zigZagRow(block.Cr.Data)
 
 	return res
 }

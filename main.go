@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"jpeg/decoder"
-	"jpeg/encoder"
 	"jpeg/shared"
 	"log"
 	"os"
@@ -160,11 +159,13 @@ func BaselineSequence(filename string) {
 
 // Чтение нескольких изображений с записью в .bmp
 func CommonAll(files []string) {
-	var err error
-
 	for i := 1; i < len(files); i++ {
 		file, _ := os.Open(files[i])
-		jpeg, _ := decoder.ReadJPEG(bufio.NewReader(file))
+		jpeg, err := decoder.ReadJPEG(bufio.NewReader(file))
+		if err != nil {
+			log.Fatal(err.Error())
+			return
+		}
 
 		res := shared.CreateMatrix[shared.Rgb](int(jpeg.ImageHeight), int(jpeg.ImageWidth))
 
@@ -190,7 +191,7 @@ func Common(files string) shared.Image {
 	var err error
 
 	file, _ := os.Open(files)
-	jpeg, _ := decoder.ReadJPEG(bufio.NewReader(file))
+	jpeg, err := decoder.ReadJPEG(bufio.NewReader(file))
 
 	res := shared.CreateMatrix[shared.Rgb](int(jpeg.ImageHeight), int(jpeg.ImageWidth))
 
@@ -212,38 +213,38 @@ func Common(files string) shared.Image {
 }
 
 // Для декодера
-// func main() {
-// 	if len(os.Args) < 2 {
-// 		log.Print("Введите путь к файлу в параметрах\n")
-// 		return
-// 	}
-
-// 	// CommonAll(os.Args)
-// 	Common(os.Args[1])
-// 	// for i := 1; i < len(os.Args); i++ {
-// 	// ProgressiveSequence(os.Args[i])
-// 	// BaselineSequence(os.Args[i])
-// 	// }
-// }
-
-// ==================================================================
 func main() {
 	if len(os.Args) < 2 {
 		log.Print("Введите путь к файлу в параметрах\n")
 		return
 	}
 
-	file, err := os.Create("result1.jpg")
-	if err != nil {
-		log.Print("WTF")
-		return
-	}
-	writer := bufio.NewWriter(file)
-
-	image := Common(os.Args[1])
-	quantY := encoder.CreateOneTable()
-	quantColor := encoder.CreateOneTable()
-
-	encoder, _ := encoder.CreateEncoder(writer, image, quantY, quantColor)
-	encoder.StartBaseline(10000)
+	CommonAll(os.Args)
+	// Common(os.Args[1])
+	// for i := 1; i < len(os.Args); i++ {
+	// ProgressiveSequence(os.Args[i])
+	// BaselineSequence(os.Args[i])
+	// }
 }
+
+// ==================================================================
+// func main() {
+// 	if len(os.Args) < 2 {
+// 		log.Print("Введите путь к файлу в параметрах\n")
+// 		return
+// 	}
+
+// 	file, err := os.Create("result1.jpg")
+// 	if err != nil {
+// 		log.Print("WTF")
+// 		return
+// 	}
+// 	writer := bufio.NewWriter(file)
+
+// 	image := Common(os.Args[1])
+// 	quantY := encoder.CreateOneTable()
+// 	quantColor := encoder.CreateOneTable()
+
+// 	encoder, _ := encoder.CreateEncoder(writer, image, quantY, quantColor)
+// 	encoder.StartBaseline(10000)
+// }

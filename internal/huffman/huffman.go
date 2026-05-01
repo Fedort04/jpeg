@@ -2,7 +2,7 @@ package huffman
 
 import (
 	"errors"
-	binreader "jpeg/decoder/binReader"
+	binreader "jpeg/internal/binReader"
 )
 
 const NumHuffCodesLen = 16 //Количество длин кодов Хаффмана

@@ -1,4 +1,4 @@
-package binwriter
+package bmpwriter
 
 import (
 	"bufio"
