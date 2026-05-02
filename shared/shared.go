@@ -122,12 +122,14 @@ func Average[T Number](a, b T) T {
 }
 
 // Умножение каждого элемента матрицы на число
-func MultMatrixOnNumber[T Number](matrix [][]T, number T) {
+func MultMatrixOnNumber[T Number](matrix [][]T, number T) [][]T {
+	res := CreateMatrix[T](len(matrix), len(matrix[0]))
 	for i := range len(matrix) {
 		for j := range len(matrix[i]) {
-			matrix[i][j] *= number
+			res[i][j] = matrix[i][j] * number
 		}
 	}
+	return res
 }
 
 // map функция для матрицы. Применяет f() к каждому элементу матрицы
@@ -168,8 +170,8 @@ func MatrixMap[T any](matrix [][]T, f func(elm *T)) {
 const (
 	SOI   uint16 = 0xFFD8
 	EOI   uint16 = 0xFFD9
-	SOF0  uint16 = 0xFFC0
-	SOF2  uint16 = 0xFFC2
+	SOF0  uint16 = 0xFFC0 //Baseline
+	SOF2  uint16 = 0xFFC2 //Progressive
 	APP0  uint16 = 0xFFE0
 	APP15 uint16 = 0xFFEF
 	DQT   uint16 = 0xFFDB
@@ -183,5 +185,4 @@ const (
 const NumOfTables = 4   //Максимальное количество таблиц
 const NumOfChannels = 3 //Максимальное количество цветовых компонент
 const MaxComps = 3      //Максимальное количество компонент
-// const MinMatrixSize = 8 //Размерность mcu
-const SizeOfTable = 64 //Количество элементов в одной таблице квантования
+const SizeOfTable = 64  //Количество элементов в одной таблице квантования

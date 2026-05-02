@@ -126,7 +126,7 @@ func TestWriteBytes(t *testing.T) {
 	w := BinWriterInit(bufio.NewWriter(buf))
 
 	testData := []byte{0x01, 0x02, 0x03, 0xFF, 0x00}
-	err := w.WriteBytes(testData)
+	err := w.WriteArray(testData)
 	if err != nil {
 		t.Fatalf("WriteBytes вернул ошибку: %v", err)
 	}
@@ -134,6 +134,40 @@ func TestWriteBytes(t *testing.T) {
 
 	if !bytes.Equal(buf.Bytes(), testData) {
 		t.Errorf("Ожидалось % X, получено % X", testData, buf.Bytes())
+	}
+}
+
+func TestWrite4Bit(t *testing.T) {
+	tests := []struct {
+		name     string
+		left     byte
+		right    byte
+		expected []byte
+	}{
+		{"Оба нуля", 0x0, 0x0, []byte{0x00}},
+		{"Левая часть 0xF, правая 0x0", 0xF, 0x0, []byte{0xF0}},
+		{"Левая часть 0x0, правая 0xF", 0x0, 0xF, []byte{0x0F}},
+		{"Обе части 0xF", 0xF, 0xF, []byte{0xFF}},
+		{"Стандартные значения 0xA и 0x5", 0xA, 0x5, []byte{0xA5}},
+		{"Значения 0x3 и 0xC", 0x3, 0xC, []byte{0x3C}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := &bytes.Buffer{}
+			w := BinWriterInit(bufio.NewWriter(buf))
+
+			err := w.Write4Bit(tt.left, tt.right)
+			if err != nil {
+				t.Fatalf("Write4Bit вернул ошибку: %v", err)
+			}
+			w.Close()
+
+			if !bytes.Equal(buf.Bytes(), tt.expected) {
+				t.Errorf("Для left=%#x, right=%#x ожидалось % X, получено % X",
+					tt.left, tt.right, tt.expected, buf.Bytes())
+			}
+		})
 	}
 }
 
@@ -227,7 +261,7 @@ func TestMultipleWrites(t *testing.T) {
 		case "twoBytes":
 			w.WriteWord(d.val.(uint16))
 		case "bytes":
-			w.WriteBytes(d.val.([]byte))
+			w.WriteArray(d.val.([]byte))
 		}
 	}
 	w.Close()

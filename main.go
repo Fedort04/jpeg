@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"jpeg/decoder"
+	"jpeg/encoder"
 	"jpeg/shared"
 	"log"
 	"os"
@@ -192,6 +193,10 @@ func Common(files string) shared.Image {
 
 	file, _ := os.Open(files)
 	jpeg, err := decoder.ReadJPEG(bufio.NewReader(file))
+	if err != nil {
+		log.Fatal(err.Error())
+		return nil
+	}
 
 	res := shared.CreateMatrix[shared.Rgb](int(jpeg.ImageHeight), int(jpeg.ImageWidth))
 
@@ -213,38 +218,44 @@ func Common(files string) shared.Image {
 }
 
 // Для декодера
-func main() {
-	if len(os.Args) < 2 {
-		log.Print("Введите путь к файлу в параметрах\n")
-		return
-	}
-
-	CommonAll(os.Args)
-	// Common(os.Args[1])
-	// for i := 1; i < len(os.Args); i++ {
-	// ProgressiveSequence(os.Args[i])
-	// BaselineSequence(os.Args[i])
-	// }
-}
-
-// ==================================================================
 // func main() {
 // 	if len(os.Args) < 2 {
 // 		log.Print("Введите путь к файлу в параметрах\n")
 // 		return
 // 	}
 
-// 	file, err := os.Create("result1.jpg")
-// 	if err != nil {
-// 		log.Print("WTF")
-// 		return
-// 	}
-// 	writer := bufio.NewWriter(file)
-
-// 	image := Common(os.Args[1])
-// 	quantY := encoder.CreateOneTable()
-// 	quantColor := encoder.CreateOneTable()
-
-// 	encoder, _ := encoder.CreateEncoder(writer, image, quantY, quantColor)
-// 	encoder.StartBaseline(10000)
+// 	CommonAll(os.Args)
+// 	// Common(os.Args[1])
+// 	// for i := 1; i < len(os.Args); i++ {
+// 	// ProgressiveSequence(os.Args[i])
+// 	// BaselineSequence(os.Args[i])
+// 	// }
 // }
+
+// ==================================================================
+func main() {
+	if len(os.Args) < 2 {
+		log.Print("Введите путь к файлу в параметрах\n")
+		return
+	}
+
+	resName := "result1.jpg"
+	file, err := os.Create(resName)
+	if err != nil {
+		log.Print("WTF")
+		return
+	}
+	writer := bufio.NewWriter(file)
+
+	image := Common(os.Args[1])
+	quantY := encoder.CreateOneTable()
+	quantColor := encoder.CreateOneTable()
+
+	encoder, _ := encoder.CreateEncoder(writer, image, quantY, quantColor)
+	if _, err := encoder.StartBaseline(10000); err != nil {
+		log.Fatal(err.Error())
+	}
+	writer.Flush()
+
+	Common(resName)
+}

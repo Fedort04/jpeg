@@ -275,7 +275,7 @@ func (jpeg *Decoder) readFileHeader() error {
 	case shared.SOF2:
 		jpeg.IsProgressive = true
 	default:
-		return errors.New("Decoder works only with Baseline and Progressive DCT-based JPEG")
+		return fmt.Errorf("Decoder works only with Baseline and Progressive DCT-based JPEG: can't read one of this markers (0x%x; 0x%x)\n", shared.SOF0, shared.SOF2)
 	}
 	if err = jpeg.readFrameHeader(); err != nil {
 		return err

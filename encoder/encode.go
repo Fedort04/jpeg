@@ -9,23 +9,23 @@ import (
 func (jpeg *Encoder) convertToYCbCr() shared.YCbCrMatrix {
 	data := *jpeg.data
 
-	realHeight := uint16(len(data))
-	realWidth := uint16(len(data[0]))
-	jpeg.imgWidth = ((realWidth + uint16(jpeg.blockHSize) - 1) / uint16(jpeg.blockHSize)) * uint16(jpeg.blockHSize)
-	jpeg.imgHeight = ((realHeight + uint16(jpeg.blockVSize) - 1) / uint16(jpeg.blockVSize)) * uint16(jpeg.blockVSize)
+	jpeg.realImgHeight = uint16(len(data))
+	jpeg.realImgWidth = uint16(len(data[0]))
+	jpeg.imgWidth = ((jpeg.realImgWidth + uint16(jpeg.blockHSize) - 1) / uint16(jpeg.blockHSize)) * uint16(jpeg.blockHSize)
+	jpeg.imgHeight = ((jpeg.realImgHeight + uint16(jpeg.blockVSize) - 1) / uint16(jpeg.blockVSize)) * uint16(jpeg.blockVSize)
 	img := shared.CreateMatrix[shared.YCbCr](int(jpeg.imgHeight), int(jpeg.imgWidth))
 
 	var realI, realJ uint16
 	for i := range jpeg.imgHeight {
-		if i >= realHeight {
-			realI = realHeight - 1
+		if i >= jpeg.realImgHeight {
+			realI = jpeg.realImgHeight - 1
 		} else {
 			realI = i
 		}
 
 		for j := range jpeg.imgWidth {
-			if j >= realWidth {
-				realJ = realWidth - 1
+			if j >= jpeg.realImgWidth {
+				realJ = jpeg.realImgWidth - 1
 			} else {
 				realJ = j
 			}

@@ -3,7 +3,7 @@ package mcu
 import "math"
 
 // Последовательность зиг-зага
-var zigZagTable [8][8]byte = [8][8]byte{
+var zigZagTable = [8][8]byte{
 	{0, 1, 5, 6, 14, 15, 27, 28},
 	{2, 4, 7, 13, 16, 26, 29, 42},
 	{3, 8, 12, 17, 25, 30, 41, 43},
@@ -17,7 +17,7 @@ var zigZagTable [8][8]byte = [8][8]byte{
 const DCTQuantCoeff = 4 // Коэффициент для таблиц квантования
 
 // Таблица с коэффициентами в ОДКП
-var idctTable [8][8]float64 = [8][8]float64{
+var idctTable = [8][8]float64{
 	{0.707107, 0.707107, 0.707107, 0.707107, 0.707107, 0.707107, 0.707107, 0.707107},
 	{0.980785, 0.831470, 0.555570, 0.195090, -0.195090, -0.555570, -0.831470, -0.980785},
 	{0.923880, 0.382683, -0.382683, -0.923880, -0.923880, -0.382683, 0.382683, 0.923880},
@@ -188,12 +188,12 @@ func (mcu *RawMCU) quantization(quantTable [][]byte) {
 }
 
 // Зиг-заг преобразование (в строку)
-func zigZagRow(data [][]float32) []int16 {
-	result := make([]int16, UnitRowCount*UnitColCount)
+func ZigZagRow[T ~int16 | ~byte, P ~byte | ~float32](data [][]P) []T {
+	result := make([]T, UnitRowCount*UnitColCount)
 	for row := range UnitRowCount {
 		for col := range UnitColCount {
 			idx := zigZagTable[row][col]
-			result[idx] = int16(data[row][col])
+			result[idx] = T(data[row][col])
 		}
 	}
 	return result
@@ -237,12 +237,12 @@ func (block *BlockRaw) ZigZag(maxH byte, maxV byte) CodingBlock {
 	temp := byte(0)
 	for _, arr := range block.Y {
 		for _, elm := range arr {
-			res.Y[temp] = zigZagRow(elm.Data)
+			res.Y[temp] = ZigZagRow[int16](elm.Data)
 			temp++
 		}
 	}
-	res.Cb = zigZagRow(block.Cb.Data)
-	res.Cr = zigZagRow(block.Cr.Data)
+	res.Cb = ZigZagRow[int16](block.Cb.Data)
+	res.Cr = ZigZagRow[int16](block.Cr.Data)
 
 	return res
 }

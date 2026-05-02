@@ -4,14 +4,13 @@ package decoder
 
 import (
 	"fmt"
-	"log"
 )
 
 // Вывод компоненты в лог
-func printComponent(c component) {
-	res := fmt.Sprintf("h: %d, v: %d, quant table id: %d\n", c.h, c.v, c.quantTableID)
-	log.Println(res)
-}
+// func printComponent(c shared.Component) {
+// 	res := fmt.Sprintf("h: %d, v: %d, quant table id: %d\n", c.H, c.V, c.QuantTableID)
+// 	log.Println(res)
+// }
 
 // Вывод таблицы в лог
 // func printTable(table []byte) {

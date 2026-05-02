@@ -2,12 +2,12 @@ package encoder
 
 import (
 	"bufio"
-	binwriter "jpeg/encoder/binWriter"
+	"errors"
+	binwriter "jpeg/internal/binWriter"
+	"jpeg/internal/huffman"
 	"jpeg/internal/mcu"
 	"jpeg/shared"
 )
-
-const samplePrecision = 8 //Глубина цвета
 
 // Типы форматов прореживания
 type EncodeFormat byte
@@ -32,8 +32,10 @@ type Encoder struct {
 	//private:
 	writer          *binwriter.BinWriter //Объект для записи файла
 	data            *shared.Image        //Данные изображения
-	imgHeight       uint16               //Высота изображения
-	imgWidth        uint16               //Ширина изображения
+	realImgHeight   uint16               //Высота изображения (реальная)
+	realImgWidth    uint16               //Ширина изображения (реальная)
+	imgHeight       uint16               //Высота изображения (для кодирования)
+	imgWidth        uint16               //Ширина изображения (для кодирования)
 	quantTableY     [][]byte             //Таблица квантования для яркости
 	quantTableColor [][]byte             //Таблица квантования для цвета
 	yh              byte                 //Горизонтальный фактор яркости
@@ -54,8 +56,6 @@ func CreateEncoder(dst *bufio.Writer, data shared.Image, quantTableY [][]byte, q
 	encoder.data = &data
 	shared.CopyToMatrix(quantTableY, &encoder.quantTableY)
 	shared.CopyToMatrix(quantTableColor, &encoder.quantTableColor)
-	shared.MultMatrixOnNumber(encoder.quantTableY, mcu.DCTQuantCoeff)
-	shared.MultMatrixOnNumber(encoder.quantTableColor, mcu.DCTQuantCoeff)
 	encoder.Format = Both
 	encoder.RestartInterval = 5
 	// Для прогрессива
@@ -69,23 +69,205 @@ func CreateEncoder(dst *bufio.Writer, data shared.Image, quantTableY [][]byte, q
 }
 
 // Запись маркера начала изображения
-func (jpeg *Encoder) writeStartImg() {
+func (jpeg *Encoder) writeStartImg() error {
 	if err := jpeg.writer.WriteWord(shared.SOI); err != nil {
-
+		return errors.New("Can't write an SOI marker\n" + err.Error())
 	}
+	return nil
+}
+
+// Запись сегмента APP0
+func (jpeg *Encoder) writeApp() error {
+	sw := &binwriter.StickyWriter{Writer: jpeg.writer}
+	sw.WriteWord(shared.APP0)
+	sw.WriteWord(app0Length)
+	sw.WriteArray(jfif[:])
+	sw.WriteWord(jfifVersion)
+	sw.WriteByte(densityUnit)
+	sw.WriteWord(xDensity)
+	sw.WriteWord(yDensity)
+	sw.WriteByte(xThumb)
+	sw.WriteByte(yThumb)
+
+	if sw.Err != nil {
+		return errors.New("Can't write an APP0 segment\n" + sw.Err.Error())
+	}
+	return nil
+}
+
+// Запись таблиц квантования
+func (jpeg *Encoder) writeQuantTable(quantTable []byte, compId byte) error {
+	sw := &binwriter.StickyWriter{Writer: jpeg.writer}
+	sw.WriteWord(shared.DQT)
+	sw.WriteWord(uint16(dqtLength))
+	sw.WriteByte(compId)
+	sw.WriteArray(quantTable)
+
+	if sw.Err != nil {
+		return errors.New("Can't write an DQT segment\n" + sw.Err.Error())
+	}
+	return nil
+}
+
+// Запись заголовка фрейма
+func (jpeg *Encoder) writeFrameHeader(isProgressive bool) error {
+	sw := &binwriter.StickyWriter{Writer: jpeg.writer}
+	if isProgressive {
+		sw.WriteWord(shared.SOF2)
+	} else {
+		sw.WriteWord(shared.SOF0)
+	}
+	sw.WriteWord(uint16(sofLength))
+	sw.WriteByte(samplePrecision)
+	sw.WriteWord(jpeg.realImgHeight)
+	sw.WriteWord(jpeg.realImgWidth)
+	sw.WriteByte(shared.NumOfChannels)
+
+	for i := range byte(shared.NumOfChannels) {
+		sw.WriteByte(i + 1)
+		if i == 0 {
+			sw.Write4Bit(jpeg.yh, jpeg.yv)
+		} else {
+			sw.Write4Bit(jpeg.ch, jpeg.cv)
+		}
+		sw.WriteByte(tableIds[i+1])
+	}
+
+	if sw.Err != nil {
+		return errors.New("Can't write an SOF segment\n" + sw.Err.Error())
+	}
+	return nil
+}
+
+// Запись таблицы Хаффмана и ее сохранение
+func (jpeg *Encoder) writeHuffTable(class byte, id byte, bits []byte, symbols []byte) (*huffman.HuffTable, error) {
+	offset, _, err := huffman.OffsetCreate(bits)
+	if err != nil {
+		return nil, err
+	}
+
+	huff, err := huffman.MakeHuffTable(offset, symbols)
+	if err != nil {
+		return nil, err
+	}
+
+	sw := &binwriter.StickyWriter{Writer: jpeg.writer}
+	length := uint16(2 + 1 + len(bits) + len(symbols))
+	sw.WriteWord(shared.DHT)
+	sw.WriteWord(length)
+	sw.Write4Bit(class, id)
+	sw.WriteArray(bits)
+	sw.WriteArray(symbols)
+	if sw.Err != nil {
+		return nil, errors.New("Can't write an DHT segment\n" + sw.Err.Error())
+	}
+
+	return huff, nil
+}
+
+// Запись сегмента DRI
+func (jpeg *Encoder) writeDri() error {
+	if jpeg.RestartInterval == 0 {
+		return nil
+	}
+	sw := &binwriter.StickyWriter{Writer: jpeg.writer}
+	sw.WriteWord(shared.DRI)
+	sw.WriteWord(driLength)
+	sw.WriteWord(uint16(jpeg.RestartInterval))
+	if sw.Err != nil {
+		return errors.New("Can't write an DRI segment\n" + sw.Err.Error())
+	}
+
+	return nil
+}
+
+// Запись компоненты в файл
+func (jpeg *Encoder) writeComponent(c *component) error {
+	sw := &binwriter.StickyWriter{Writer: jpeg.writer}
+	sw.WriteByte(c.selector)
+	sw.Write4Bit(c.dcTable, c.acTable)
+	if sw.Err != nil {
+		return errors.New("Can't write color component data in SOS segment\n" + sw.Err.Error())
+	}
+	return nil
+}
+
+// Запись заголовка скана (предварительно записываются таблицы Хаффмана и DRI)
+// Реализация для Baseline
+func (jpeg *Encoder) writeBaselineScanHeader() error {
+	hw := &headWriter{w: jpeg}
+	//Записать таблицы Хаффмана
+	hw.writeHuffTable(0, 0, yDCBits[:], yDCSymbols[:])
+	hw.writeHuffTable(0, 1, cDCBits[:], cDCSymbols[:])
+	hw.writeHuffTable(1, 0, yACBits[:], yACSymbols[:])
+	hw.writeHuffTable(1, 1, cACBits[:], cACSymbols[:])
+	//Записать DRI
+	hw.writeDri()
+	if hw.err != nil {
+		return hw.err
+	}
+
+	//Записать сам заголовок
+	sw := &binwriter.StickyWriter{Writer: jpeg.writer}
+	sw.WriteWord(shared.SOS)
+	sw.WriteWord(baselineSOSLength)
+	sw.WriteByte(baselineColors)
+	if sw.Err != nil {
+		return errors.New("Can't write an SOS segment\n" + sw.Err.Error())
+	}
+
+	for i := range byte(shared.NumOfChannels) {
+		curSelector := i + 1
+		hw.writeComponent(&component{selector: curSelector, dcTable: tableIds[curSelector], acTable: tableIds[curSelector]})
+	}
+	if hw.err != nil {
+		return hw.err
+	}
+
+	sw.WriteByte(baselineSS)
+	sw.WriteByte(baselineSE)
+	sw.Write4Bit(baselineAh, baselineAl)
+	if sw.Err != nil {
+		return errors.New("Can't write an SOS segment\n" + sw.Err.Error())
+	}
+
+	return nil
+}
+
+// Запись заголовка файла
+func (jpeg *Encoder) writeHeader() error {
+	hw := &headWriter{w: jpeg}
+	hw.writeStartImg()
+	hw.writeApp()
+	hw.writeQuantTable(mcu.ZigZagRow[byte](jpeg.quantTableY), lumId)
+	hw.writeQuantTable(mcu.ZigZagRow[byte](jpeg.quantTableColor), colorId)
+	hw.writeFrameHeader(false)
+
+	if hw.err != nil {
+		return hw.err
+	}
+	return nil
 }
 
 // По вызову функции выполняется Baseline кодирование
-func (encoder *Encoder) StartBaseline(numOfRows uint16) (bool, error) {
-	encoder.factorUpdate()
-	img := encoder.convertToYCbCr()
-	blocks := encoder.blockSubsample(img)
+func (jpeg *Encoder) StartBaseline(numOfRows uint16) (bool, error) {
+	jpeg.factorUpdate()
+	img := jpeg.convertToYCbCr()
+	blocks := jpeg.blockSubsample(img)
 	shared.MatrixMap(blocks, func(elm *mcu.BlockRaw) {
 		elm.DCT()
-		elm.Quantization(encoder.quantTableY, encoder.quantTableColor)
+		elm.Quantization(shared.MultMatrixOnNumber(jpeg.quantTableY, mcu.DCTQuantCoeff), shared.MultMatrixOnNumber(jpeg.quantTableColor, mcu.DCTQuantCoeff))
 	})
-	codingBlocks := encoder.zigZag(blocks)
-	print(codingBlocks)
+	// codingBlocks := encoder.zigZag(blocks)
+
+	if err := jpeg.writeHeader(); err != nil {
+		return false, err
+	}
+
+	if err := jpeg.writeBaselineScanHeader(); err != nil {
+		return false, err
+	}
+
 	return true, nil
 }
 

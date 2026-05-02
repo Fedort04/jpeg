@@ -79,12 +79,19 @@ func (b *BinWriter) WriteBits(bits []bool) error {
 }
 
 // Записывает массив байт
-func (b *BinWriter) WriteBytes(data []byte) error {
+func (b *BinWriter) WriteArray(data []byte) error {
 	if err := b.FlushBits(); err != nil {
 		return err
 	}
 	_, err := b.w.Write(data)
 	return err
+}
+
+// Запись байта парой из 4бит
+func (b *BinWriter) Write4Bit(left byte, right byte) error {
+	res := left << 4
+	res += right
+	return b.WriteByte(res)
 }
 
 // Завершить запись файла (данные записываются в память)
