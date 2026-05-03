@@ -1,8 +1,12 @@
 package encoder
 
 import (
+	"errors"
+	binwriter "jpeg/internal/binWriter"
+	"jpeg/internal/huffman"
 	"jpeg/internal/mcu"
 	"jpeg/shared"
+	"math"
 )
 
 // Перевод изображения в YCbCr с расширением изображения до кратного subsample размера
@@ -48,10 +52,12 @@ func (jpeg *Encoder) factorUpdate() {
 		jpeg.maxV = 1
 	case Horizontal:
 		jpeg.yh = 2
+		jpeg.yv = 1
 		jpeg.maxH = 2
 		jpeg.maxV = 1
-	case Vertival:
+	case Vertical:
 		jpeg.yv = 2
+		jpeg.yh = 1
 		jpeg.maxV = 2
 		jpeg.maxH = 1
 	case Both:
@@ -159,4 +165,170 @@ func (jpeg *Encoder) zigZag(blocks [][]mcu.BlockRaw) [][]mcu.CodingBlock {
 		}
 	}
 	return res
+}
+
+// Запись маркера сброса дельты
+func (jpeg *Encoder) writeRestart() error {
+	sw := &binwriter.StickyWriter{Writer: jpeg.writer}
+	sw.FlushBits()
+
+	if jpeg.restartCounter >= shared.NumOfRstMarkers {
+		jpeg.restartCounter = 0
+	}
+	curMarker := shared.RST0 + uint16(jpeg.restartCounter)
+	sw.WriteWord(curMarker)
+	jpeg.restartCounter++
+
+	if sw.Err != nil {
+		return errors.New("Can't write an RST marker\n" + sw.Err.Error())
+	}
+	return nil
+}
+
+// Умный счетчик для перезапуска дельта-кодирования
+// При необходимости сам записывает сегмент сброса дельты
+func (jpeg *Encoder) restartIncrement() error {
+	jpeg.mcuCounter++
+
+	var err error
+	if jpeg.RestartInterval != 0 && jpeg.mcuCounter >= jpeg.RestartInterval {
+		jpeg.prev = make([]int16, shared.NumOfChannels)
+		jpeg.mcuCounter = 0
+		err = jpeg.writeRestart()
+	}
+
+	return err
+}
+
+// Вычисление категории в соответствии с F.1
+func (jpeg *Encoder) findCategory(val int16) byte {
+	if val == 0 {
+		return 0
+	}
+
+	abs := int16(math.Abs(float64(val)))
+	n := byte(0)
+	for (1 << n) <= abs {
+		n++
+	}
+	return n
+}
+
+// Создание дополнительного кода для кодирования значения
+func createAddVal(val int16, len byte) uint16 {
+	if val < 0 {
+		mask := (int16(1) << len) - 1
+		val = int16(math.Abs(float64(val)))
+		return uint16(val ^ mask)
+	}
+	return uint16(val)
+}
+
+// Кодирование дополнительного значения, которое идет после символа Хаффмана
+func (jpeg *Encoder) encodeAddVal(val int16, ssss byte) error {
+	return jpeg.writer.WriteBits(jpeg.writer.CreateBitsArray(createAddVal(val, ssss), ssss))
+}
+
+// Кодирование одного символа Хаффмана
+func (jpeg *Encoder) encodeSymbol(symbol byte, table *huffman.HuffTable) error {
+	code, len, err := table.GetCodeBySym(symbol)
+	if err != nil {
+		return err
+	}
+
+	if err := jpeg.writer.WriteBits(jpeg.writer.CreateBitsArray(code, len)); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Кодирование DC-элемента
+func (jpeg *Encoder) encodeDC(val int16, table *huffman.HuffTable, ch byte) error {
+	diff := val - jpeg.prev[ch]
+	jpeg.prev[ch] = val
+
+	ssss := jpeg.findCategory(diff)
+	se := &stickyEncoder{encoder: jpeg}
+	se.encodeSymbol(ssss, table)
+	se.encodeAddVal(diff, ssss)
+	if se.err != nil {
+		return errors.New("Can't write a DC symbol\n" + se.err.Error())
+	}
+
+	return nil
+}
+
+// Кодирование AC-элемента
+func (jpeg *Encoder) encodeAC(dataUnit []int16, table *huffman.HuffTable) error {
+	var zeroCounter byte
+
+	for k := 1; k <= baselineSE; k++ {
+		val := dataUnit[k]
+		if val == 0 {
+			zeroCounter++
+			continue
+		}
+
+		se := &stickyEncoder{encoder: jpeg}
+		// ZRL для каждых 16 нулей
+		for zeroCounter >= 16 {
+			se.encodeSymbol(shared.ZRL, table)
+			zeroCounter -= 16
+		}
+
+		// Кодировка ненулевого значения
+		ssss := jpeg.findCategory(val)
+		rs := (zeroCounter << 4) | ssss
+		se.encodeSymbol(rs, table)
+		se.encodeAddVal(val, ssss)
+
+		if se.err != nil {
+			return errors.New("Can't write an AC symbol\n" + se.err.Error())
+		}
+
+		zeroCounter = 0
+	}
+
+	if zeroCounter > 0 {
+		return jpeg.encodeSymbol(shared.EndOfBlock, table)
+	}
+	return nil
+}
+
+// Кодирование одного data-unit
+func (jpeg *Encoder) dataUnitEncode(dataUnit []int16, channel byte) error {
+	var dcTable, acTable *huffman.HuffTable
+	if mcu.Channel(channel) != mcu.Y { //Вариант для цветов
+		dcTable = jpeg.cDCHuff
+		acTable = jpeg.cACHuff
+	} else { // Вариант для яркости
+		dcTable = jpeg.yDCHuff
+		acTable = jpeg.yACHuff
+	}
+
+	se := &stickyEncoder{encoder: jpeg}
+	se.encodeDC(dataUnit[0], dcTable, channel)
+	se.encodeAC(dataUnit, acTable)
+
+	if se.err != nil {
+		return se.err
+	}
+	return nil
+}
+
+// Кодирование блока baseline
+func (jpeg *Encoder) baselineBlockEncode(block *mcu.CodingBlock) error {
+	se := &stickyEncoder{encoder: jpeg}
+	for _, y := range block.Y {
+		se.dataUnitEncode(y, byte(mcu.Y))
+	}
+	se.dataUnitEncode(block.Cb, byte(mcu.Cb))
+	se.dataUnitEncode(block.Cr, byte(mcu.Cr))
+	se.restartIncrement()
+
+	if se.err != nil {
+		return errors.New("Error when encode block\n" + se.err.Error())
+	}
+	return nil
 }

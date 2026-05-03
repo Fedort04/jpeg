@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"fmt"
 	"jpeg/decoder"
 	"jpeg/encoder"
 	"jpeg/shared"
@@ -11,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 )
+
+const encoderBaselinePath = "encoder/pics/Baseline/"
 
 // Создает директорию по указанному пути и названию
 // filePath - полный путь, включая имя файла (например: /home/user/newdir/file.txt)
@@ -212,8 +215,8 @@ func Common(files string) shared.Image {
 		log.Fatal(err.Error())
 	}
 
-	// filename, _ := decoder.JpegNameToBmp(files[i], 0)
-	// decoder.EncodeBMP(res, filename)
+	filename, _ := decoder.JpegNameToBmp(files, 0)
+	decoder.EncodeBMP(res, filename)
 	return res
 }
 
@@ -233,29 +236,41 @@ func Common(files string) shared.Image {
 // }
 
 // ==================================================================
+// Для кодировщика (использует декодер при тестировании)
+
+// Закодировать изображение
+func encodeImage(filepath string, img shared.Image) {
+	file, err := os.Create(filepath)
+	if err != nil {
+		fmt.Println(err.Error())
+		return
+	}
+	writer := bufio.NewWriter(file)
+
+	quantY := encoder.CreateOneTable()
+	quantColor := encoder.CreateOneTable()
+	jpgEncoder, err := encoder.CreateEncoder(writer, img, quantY, quantColor)
+	if err != nil {
+		log.Fatal(err.Error())
+		return
+	}
+
+	if _, err := jpgEncoder.StartBaseline(0); err != nil {
+		log.Fatal(err.Error())
+	}
+	writer.Flush()
+
+	Common(filepath)
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		log.Print("Введите путь к файлу в параметрах\n")
 		return
 	}
 
-	resName := "result1.jpg"
-	file, err := os.Create(resName)
-	if err != nil {
-		log.Print("WTF")
-		return
+	for i := 1; i < len(os.Args); i++ {
+		filename := GetFileName(os.Args[i])
+		encodeImage(encoderBaselinePath+filename+".jpg", Common(os.Args[i]))
 	}
-	writer := bufio.NewWriter(file)
-
-	image := Common(os.Args[1])
-	quantY := encoder.CreateOneTable()
-	quantColor := encoder.CreateOneTable()
-
-	encoder, _ := encoder.CreateEncoder(writer, image, quantY, quantColor)
-	if _, err := encoder.StartBaseline(10000); err != nil {
-		log.Fatal(err.Error())
-	}
-	writer.Flush()
-
-	Common(resName)
 }

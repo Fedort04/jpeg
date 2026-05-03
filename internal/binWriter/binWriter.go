@@ -62,13 +62,32 @@ func (b *BinWriter) WriteBit(bit bool) error {
 		if err := b.w.WriteByte(b.buf); err != nil {
 			return err
 		}
+		if b.buf == 0xFF { //После xFF записать 00
+			if err := b.w.WriteByte(0); err != nil {
+				return err
+			}
+		}
 		b.buf = 0
 		b.bits = 0
 	}
 	return nil
 }
 
-// Записывает массив битов
+// Создает массив битов, обрезая старшие биты в val
+func (b *BinWriter) CreateBitsArray(val uint16, len byte) []bool {
+	if len > 16 {
+		return nil
+	}
+
+	result := make([]bool, len)
+	for i := range len {
+		bit := (val >> (len - i - 1)) & 1
+		result[i] = bit == 1
+	}
+	return result
+}
+
+// Записывает массив битов (первый элемент - старший бит)
 func (b *BinWriter) WriteBits(bits []bool) error {
 	for _, bit := range bits {
 		if err := b.WriteBit(bit); err != nil {

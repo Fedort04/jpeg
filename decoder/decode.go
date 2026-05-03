@@ -102,7 +102,7 @@ func (jpeg *Decoder) decodeAC(unit []int16, huff *huffman.HuffTable) error {
 		big := byte(rs >> 4)
 		small := byte(rs & 0x0f)
 
-		if rs == 0x00 { //Special symbol 00
+		if rs == shared.EndOfBlock { //Special symbol 00
 			return nil
 		}
 

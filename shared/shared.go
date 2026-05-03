@@ -132,13 +132,26 @@ func MultMatrixOnNumber[T Number](matrix [][]T, number T) [][]T {
 	return res
 }
 
-// map функция для матрицы. Применяет f() к каждому элементу матрицы
+// map функция для матрицы. Применяет f() к каждому элементу матрицы в порядке слева-направо сверху-вниз
 func MatrixMap[T any](matrix [][]T, f func(elm *T)) {
 	for _, row := range matrix {
 		for _, elm := range row {
 			f(&elm)
 		}
 	}
+}
+
+// map функция для матрицы. Применяет f() к каждому элементу матрицы в порядке слева-направо сверху-вниз
+// Вариант, который обрабатывает возникающие ошибки
+func MatrixMapError[T any](matrix [][]T, f func(elm *T) error) error {
+	for _, row := range matrix {
+		for _, elm := range row {
+			if err := f(&elm); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // @todo полезный, но не подходит((
@@ -182,7 +195,10 @@ const (
 	RST7  uint16 = 0xFFD7
 )
 
-const NumOfTables = 4   //Максимальное количество таблиц
-const NumOfChannels = 3 //Максимальное количество цветовых компонент
-const MaxComps = 3      //Максимальное количество компонент
-const SizeOfTable = 64  //Количество элементов в одной таблице квантования
+const EndOfBlock = 0x00   //Конец блока AC
+const ZRL = 0xF0          //группа из 16 нулей
+const NumOfRstMarkers = 8 //Количество RST маркеров
+const NumOfTables = 4     //Максимальное количество таблиц
+const NumOfChannels = 3   //Максимальное количество цветовых компонент
+const MaxComps = 3        //Максимальное количество компонент
+const SizeOfTable = 64    //Количество элементов в одной таблице квантования

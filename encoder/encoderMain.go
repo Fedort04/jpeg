@@ -15,7 +15,7 @@ type EncodeFormat byte
 const (
 	Without    EncodeFormat = iota //4:4:4
 	Horizontal                     //4:2:2 вертикальный
-	Vertival                       //4:2:2 горизонтальный
+	Vertical                       //4:2:2 горизонтальный
 	Both                           //4:2:0
 )
 
@@ -48,6 +48,13 @@ type Encoder struct {
 	numBlocksWidth  uint16               //Количество блоков mcu в изображении по ширине
 	blockVSize      byte                 //Размер блока по вертикали
 	blockHSize      byte                 //Размер блока по горизонтали
+	yDCHuff         *huffman.HuffTable   //Таблица Хаффманна DC яркости
+	yACHuff         *huffman.HuffTable   //Таблица Хаффманна AC яркости
+	cDCHuff         *huffman.HuffTable   //Таблица Хаффманна DC цвета
+	cACHuff         *huffman.HuffTable   //Таблица Хаффманна AC цвета
+	prev            []int16              //Предыдущие значения для дельта кодирования
+	mcuCounter      byte                 //Счетчик для restartInterval
+	restartCounter  byte                 //Счетчик кол-ва рестартов в потоке
 }
 
 // Конструктор объекта кодирования
@@ -65,6 +72,7 @@ func CreateEncoder(dst *bufio.Writer, data shared.Image, quantTableY [][]byte, q
 	encoder.Capprox = 1
 
 	encoder.writer = binwriter.BinWriterInit(dst)
+	encoder.prev = make([]int16, shared.NumOfChannels)
 	return &encoder, nil
 }
 
@@ -72,6 +80,13 @@ func CreateEncoder(dst *bufio.Writer, data shared.Image, quantTableY [][]byte, q
 func (jpeg *Encoder) writeStartImg() error {
 	if err := jpeg.writer.WriteWord(shared.SOI); err != nil {
 		return errors.New("Can't write an SOI marker\n" + err.Error())
+	}
+	return nil
+}
+
+func (jpeg *Encoder) writeEndImg() error {
+	if err := jpeg.writer.WriteWord(shared.EOI); err != nil {
+		return errors.New("Can't write an EOI marker\n" + err.Error())
 	}
 	return nil
 }
@@ -195,16 +210,16 @@ func (jpeg *Encoder) writeComponent(c *component) error {
 // Запись заголовка скана (предварительно записываются таблицы Хаффмана и DRI)
 // Реализация для Baseline
 func (jpeg *Encoder) writeBaselineScanHeader() error {
-	hw := &headWriter{w: jpeg}
+	se := &stickyEncoder{encoder: jpeg}
 	//Записать таблицы Хаффмана
-	hw.writeHuffTable(0, 0, yDCBits[:], yDCSymbols[:])
-	hw.writeHuffTable(0, 1, cDCBits[:], cDCSymbols[:])
-	hw.writeHuffTable(1, 0, yACBits[:], yACSymbols[:])
-	hw.writeHuffTable(1, 1, cACBits[:], cACSymbols[:])
+	jpeg.yDCHuff = se.writeHuffTable(0, 0, yDCBits[:], yDCSymbols[:])
+	jpeg.cDCHuff = se.writeHuffTable(0, 1, cDCBits[:], cDCSymbols[:])
+	jpeg.yACHuff = se.writeHuffTable(1, 0, yACBits[:], yACSymbols[:])
+	jpeg.cACHuff = se.writeHuffTable(1, 1, cACBits[:], cACSymbols[:])
 	//Записать DRI
-	hw.writeDri()
-	if hw.err != nil {
-		return hw.err
+	se.writeDri()
+	if se.err != nil {
+		return se.err
 	}
 
 	//Записать сам заголовок
@@ -218,10 +233,10 @@ func (jpeg *Encoder) writeBaselineScanHeader() error {
 
 	for i := range byte(shared.NumOfChannels) {
 		curSelector := i + 1
-		hw.writeComponent(&component{selector: curSelector, dcTable: tableIds[curSelector], acTable: tableIds[curSelector]})
+		se.writeComponent(&component{selector: curSelector, dcTable: tableIds[curSelector], acTable: tableIds[curSelector]})
 	}
-	if hw.err != nil {
-		return hw.err
+	if se.err != nil {
+		return se.err
 	}
 
 	sw.WriteByte(baselineSS)
@@ -236,15 +251,15 @@ func (jpeg *Encoder) writeBaselineScanHeader() error {
 
 // Запись заголовка файла
 func (jpeg *Encoder) writeHeader() error {
-	hw := &headWriter{w: jpeg}
-	hw.writeStartImg()
-	hw.writeApp()
-	hw.writeQuantTable(mcu.ZigZagRow[byte](jpeg.quantTableY), lumId)
-	hw.writeQuantTable(mcu.ZigZagRow[byte](jpeg.quantTableColor), colorId)
-	hw.writeFrameHeader(false)
+	se := &stickyEncoder{encoder: jpeg}
+	se.writeStartImg()
+	se.writeApp()
+	se.writeQuantTable(mcu.ZigZagRow[byte](jpeg.quantTableY), lumId)
+	se.writeQuantTable(mcu.ZigZagRow[byte](jpeg.quantTableColor), colorId)
+	se.writeFrameHeader(false)
 
-	if hw.err != nil {
-		return hw.err
+	if se.err != nil {
+		return se.err
 	}
 	return nil
 }
@@ -258,7 +273,7 @@ func (jpeg *Encoder) StartBaseline(numOfRows uint16) (bool, error) {
 		elm.DCT()
 		elm.Quantization(shared.MultMatrixOnNumber(jpeg.quantTableY, mcu.DCTQuantCoeff), shared.MultMatrixOnNumber(jpeg.quantTableColor, mcu.DCTQuantCoeff))
 	})
-	// codingBlocks := encoder.zigZag(blocks)
+	codingBlocks := jpeg.zigZag(blocks)
 
 	if err := jpeg.writeHeader(); err != nil {
 		return false, err
@@ -268,6 +283,21 @@ func (jpeg *Encoder) StartBaseline(numOfRows uint16) (bool, error) {
 		return false, err
 	}
 
+	//Начало кодирование потока Хаффмана (не забыть сбросить счетчик рестартов)
+	jpeg.restartCounter = 0
+	if err := shared.MatrixMapError(codingBlocks, func(elm *mcu.CodingBlock) error {
+		if err := jpeg.baselineBlockEncode(elm); err != nil {
+			return err
+		}
+		return nil
+		//Конец лямбды
+	}); err != nil {
+		return false, err
+	}
+
+	if err := jpeg.writeEndImg(); err != nil {
+		return false, err
+	}
 	return true, nil
 }
 

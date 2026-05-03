@@ -104,20 +104,97 @@ func TestWriteBit(t *testing.T) {
 	}
 }
 
-func TestWriteBits(t *testing.T) {
-	buf := &bytes.Buffer{}
-	w := BinWriterInit(bufio.NewWriter(buf))
-
-	bits := []bool{true, false, true, false, true, true, false, false}
-	err := w.WriteBits(bits)
-	if err != nil {
-		t.Fatalf("WriteBits вернул ошибку: %v", err)
+func TestWriteBitsVariants(t *testing.T) {
+	tests := []struct {
+		name  string
+		calls []struct { // последовательность вызовов WriteBits
+			val byte
+			len byte
+		}
+		expected []byte
+	}{
+		{
+			name: "len=0 – пустой результат",
+			calls: []struct {
+				val byte
+				len byte
+			}{{0x00, 0}},
+			expected: []byte{},
+		},
+		{
+			name: "len=8 – полный байт",
+			calls: []struct {
+				val byte
+				len byte
+			}{{0x12, 8}},
+			expected: []byte{0x12},
+		},
+		{
+			name: "len=4 – нулевые младшие биты",
+			calls: []struct {
+				val byte
+				len byte
+			}{{0xA0, 4}},
+			expected: []byte{0x00},
+		},
+		{
+			name: "len=3 – три бита 110",
+			calls: []struct {
+				val byte
+				len byte
+			}{{0x06, 3}},
+			expected: []byte{0xC0},
+		},
+		{
+			name: "len=7 – семь бит из 0xAA",
+			calls: []struct {
+				val byte
+				len byte
+			}{{0xAA, 7}},
+			expected: []byte{0x54},
+		},
+		{
+			name: "два вызова подряд: 5 бит + 3 бита (ровно 1 байт)",
+			calls: []struct {
+				val byte
+				len byte
+			}{
+				{0b00010101, 5}, {0b00000101, 3},
+			},
+			expected: []byte{0b10101101}, // 10101101
+		},
+		{
+			name: "три вызова подряд: 4 бита + 3 бита + 2 бита (больше байта)",
+			calls: []struct {
+				val byte
+				len byte
+			}{
+				{0x0A, 4}, // 1010
+				{0x04, 3}, // 100
+				{0x03, 2}, // 11
+			},
+			expected: []byte{0xA9, 0b10000000}, // 1010 100 11 -> 10101001 10000000
+		},
 	}
-	w.Close()
 
-	expected := []byte{0xAC} // 10101100
-	if !bytes.Equal(buf.Bytes(), expected) {
-		t.Errorf("Ожидалось % X, получено % X", expected, buf.Bytes())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := &bytes.Buffer{}
+			w := BinWriterInit(bufio.NewWriter(buf))
+
+			for _, call := range tt.calls {
+				bits := w.CreateBitsArray(uint16(call.val), call.len)
+				err := w.WriteBits(bits)
+				if err != nil {
+					t.Fatalf("WriteBits вернул ошибку: %v", err)
+				}
+			}
+			w.Close()
+
+			if !bytes.Equal(buf.Bytes(), tt.expected) {
+				t.Errorf("Ожидалось % X, получено % X", tt.expected, buf.Bytes())
+			}
+		})
 	}
 }
 

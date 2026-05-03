@@ -2,7 +2,9 @@ package huffman
 
 import (
 	"errors"
+	"fmt"
 	binreader "jpeg/internal/binReader"
+	"slices"
 )
 
 const NumHuffCodesLen = 16 //Количество длин кодов Хаффмана
@@ -10,9 +12,10 @@ const maxNumHuffSym = 176  //Максимальное количество си�
 
 // Структура таблицы Хаффмана
 type HuffTable struct {
-	offset  []byte   // Количество символов по длине для вычисления кодов
-	symbols []byte   // Символы в таблице
-	codes   []uint16 //Коды для символов
+	offset     []byte   // Количество символов по длине для вычисления кодов
+	symbols    []byte   // Символы в таблице
+	codes      []uint16 // Коды для символов
+	codeLength []byte   // Длина кодов для символов
 }
 
 // Декодирование из битового потока значений Хаффмана с помощью binReader
@@ -43,10 +46,12 @@ func MakeHuffTable(offset []byte, symbols []byte) (*HuffTable, error) {
 	ans.offset = offset
 	ans.symbols = symbols
 	ans.codes = make([]uint16, offset[NumHuffCodesLen])
+	ans.codeLength = make([]byte, len(ans.codes))
 	var code uint16
 	for i := range NumHuffCodesLen {
 		for j := ans.offset[i]; j < ans.offset[i+1]; j++ {
 			ans.codes[j] = code
+			ans.codeLength[j] = byte(i + 1)
 			code++
 		}
 		code = code << 1
@@ -68,6 +73,16 @@ func OffsetCreate(bits []byte) ([]byte, byte, error) {
 		offset[i] = sumElem
 	}
 	return offset, sumElem, nil
+}
+
+// Получить код по символу из таблицы
+// Возвращает код и его длину
+func (huff *HuffTable) GetCodeBySym(sym byte) (uint16, byte, error) {
+	idx := slices.Index(huff.symbols, sym)
+	if idx == -1 {
+		return 0, 0, fmt.Errorf("Huff table can't find symbol %X", sym)
+	}
+	return huff.codes[idx], huff.codeLength[idx], nil
 }
 
 // Чтение и конструирование таблиц Хаффмана

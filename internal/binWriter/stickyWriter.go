@@ -47,3 +47,10 @@ func (sw *StickyWriter) Write4Bit(left byte, right byte) {
 	}
 	sw.Err = sw.Writer.Write4Bit(left, right)
 }
+
+func (sw *StickyWriter) FlushBits() {
+	if sw.Err != nil {
+		return
+	}
+	sw.Err = sw.Writer.FlushBits()
+}
