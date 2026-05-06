@@ -477,7 +477,7 @@ func (jpeg *Decoder) rgbCalc(readAll bool, startRow int, endRow int) {
 			mcuRow := row * int(jpeg.maxV) // Номер текущего MCU
 			mcuCol := col * int(jpeg.maxH) // Номер текущего MCU
 
-			curBlock := shared.CreateYCbCrBlock(jpeg.maxV, jpeg.maxH)
+			curBlock := shared.CreateYCbCrBlock(jpeg.maxV, jpeg.maxH, mcu.UnitRowCount, mcu.UnitColCount)
 
 			for c := range jpeg.numOfComps {
 				jpeg.componentCalc(uint(mcuRow), uint(mcuCol), curBlock, mcu.Channel(c), readAll)

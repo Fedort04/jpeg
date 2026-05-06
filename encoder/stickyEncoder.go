@@ -1,6 +1,9 @@
 package encoder
 
-import "jpeg/internal/huffman"
+import (
+	"jpeg/internal/huffman"
+	"jpeg/internal/mcu"
+)
 
 type stickyEncoder struct {
 	encoder *Encoder
@@ -28,11 +31,11 @@ func (se *stickyEncoder) encodeDC(val int16, table *huffman.HuffTable, ch byte) 
 	se.err = se.encoder.encodeDC(val, table, ch)
 }
 
-func (se *stickyEncoder) encodeAC(dataUnit []int16, acTable *huffman.HuffTable) {
+func (se *stickyEncoder) encodeAC(dataUnit []int16, ss byte, send byte, acTable *huffman.HuffTable) {
 	if se.err != nil {
 		return
 	}
-	se.err = se.encoder.encodeAC(dataUnit, acTable)
+	se.err = se.encoder.encodeAC(dataUnit, ss, send, acTable)
 }
 
 func (se *stickyEncoder) writeStartImg() {
@@ -98,4 +101,39 @@ func (se *stickyEncoder) encodeAddVal(val int16, ssss byte) {
 		return
 	}
 	se.err = se.encoder.encodeAddVal(val, ssss)
+}
+
+func (se *stickyEncoder) writeHeader(isProgressive bool) {
+	if se.err != nil {
+		return
+	}
+	se.err = se.encoder.writeHeader(isProgressive)
+}
+
+func (se *stickyEncoder) writeBaselineScanHeader(blocks [][]mcu.CodingBlock) {
+	if se.err != nil {
+		return
+	}
+	se.err = se.encoder.writeBaselineScanHeader(blocks)
+}
+
+func (se *stickyEncoder) writeProgressiveScan(blocks [][]mcu.CodingBlock, head *scanHeader) {
+	if se.err != nil {
+		return
+	}
+	se.err = se.encoder.writeProgressiveScan(blocks, head)
+}
+
+func (se *stickyEncoder) writeSos(config *scanHeader) {
+	if se.err != nil {
+		return
+	}
+	se.err = se.encoder.writeSos(config)
+}
+
+func (se *stickyEncoder) writeEndImg() {
+	if se.err != nil {
+		return
+	}
+	se.err = se.encoder.writeEndImg()
 }

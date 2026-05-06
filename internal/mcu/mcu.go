@@ -1,6 +1,9 @@
 package mcu
 
-import "math"
+import (
+	"jpeg/shared"
+	"math"
+)
 
 // Последовательность зиг-зага
 var zigZagTable = [8][8]byte{
@@ -252,4 +255,99 @@ type CodingBlock struct {
 	Y  [][]int16
 	Cb []int16
 	Cr []int16
+}
+
+// Получение гистоаграммы из массива row в отрезке ss-se
+func channelHist(row []int16, ss byte, se byte) map[uint16]int {
+	res := make(map[uint16]int)
+	var zeroCounter byte
+
+	for k := ss; k <= se; k++ {
+		val := row[k]
+		if val == 0 {
+			zeroCounter++
+			continue
+		}
+
+		for zeroCounter >= 16 {
+			zeroCounter -= 16
+			res[shared.ZRL]++
+		}
+
+		ssss := shared.FindCategory(val)
+		rs := uint16((zeroCounter << 4) | ssss)
+		res[rs]++
+		zeroCounter = 0
+	}
+
+	if zeroCounter > 0 {
+		res[shared.EndOfBlock]++
+	}
+	return res
+}
+
+// Гистограмма частоты для прогрессива
+func ChannelHistProg(row []int16, ss byte, se byte, eobCounter *int) map[uint16]int {
+	res := make(map[uint16]int)
+	allZero := true
+	for k := ss; k <= se; k++ {
+		if row[k] != 0 {
+			allZero = false
+			break
+		}
+	}
+
+	if allZero {
+		*eobCounter++
+		return res
+	}
+
+	if *eobCounter != 0 {
+		ssss := shared.FindCategory(int16(*eobCounter)) - 1
+		res[uint16(ssss<<4)]++
+		*eobCounter = 0
+	}
+
+	var zeroCounter byte
+
+	for k := ss; k <= se; k++ {
+		val := row[k]
+		if val == 0 {
+			zeroCounter++
+			continue
+		}
+
+		for zeroCounter >= 16 {
+			zeroCounter -= 16
+			res[shared.ZRL]++
+		}
+
+		ssss := shared.FindCategory(val)
+		rs := uint16((zeroCounter << 4) | ssss)
+		res[rs]++
+		zeroCounter = 0
+	}
+
+	if zeroCounter > 0 {
+		res[shared.EndOfBlock]++
+	}
+	return res
+}
+
+// Получение гистограммы частоты встречаемых символов канала ch в отрезке ss-se
+func (block *CodingBlock) GetChannelHist(ch byte, ss byte, se byte) map[uint16]int {
+	res := make(map[uint16]int)
+	channel := Channel(ch)
+
+	switch channel {
+	case Y:
+		for _, row := range block.Y {
+			shared.MergeInto(res, channelHist(row, ss, se))
+		}
+	default:
+		shared.MergeInto(res, channelHist(block.Cb, ss, se))
+		shared.MergeInto(res, channelHist(block.Cr, ss, se))
+	}
+
+	return res
 }

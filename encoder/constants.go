@@ -4,7 +4,13 @@ import "jpeg/shared"
 
 // Константы для кодирования
 
-const samplePrecision = 8 //Глубина цвета
+const samplePrecision = 8               //Глубина цвета
+const defaultRestartInterval = 5        //restartInterval по умолчанию
+var defaultYSpectral = []byte{1, 5, 63} //Для яркости по умолчанию
+const defaultYapprox = 2
+
+var defaultCSpectral = []byte{1, 63} //Для цвета по умолчанию
+const defaultCapprox = 1
 
 // ID таблиц для компонент
 var tableIds = map[byte]byte{
@@ -48,6 +54,41 @@ type component struct {
 	acTable  byte
 }
 
+// Структура с параметрами заголовка скана
+type scanHeader struct {
+	marker uint16      //Маркер текущего скана
+	length uint16      //Длина заголовка
+	comps  []component //Данные компонент
+	ss     byte        //Spectral selection start
+	se     byte        //Spectral selection end
+	ah     byte        //Successive approx start
+	al     byte        //Successive approx end
+}
+
+// После копирования обязательно установить компоненты
+func (sh *scanHeader) copy() *scanHeader {
+	return &scanHeader{
+		marker: sh.marker,
+		length: 0,
+		ss:     sh.ss,
+		se:     sh.se,
+		ah:     sh.ah,
+		al:     sh.al,
+		comps:  nil,
+	}
+}
+
+// Вычисление длины заголовка по готовой структуре
+func (sh *scanHeader) evalLength() {
+	sh.length = 2 + 1 + 1 + 1 + 1 + 2*uint16(len(sh.comps))
+}
+
+// Установить массив компонент (обновляет длину маркера)
+func (sh *scanHeader) setComps(data []component) {
+	sh.comps = data
+	sh.evalLength()
+}
+
 // Значения, которые используются только в Progressive
 // Их значение по умолчанию для Baseline
 const baselineSOSLength = 12
@@ -56,6 +97,8 @@ const baselineSS = 0
 const baselineSE = 63
 const baselineAh = 0
 const baselineAl = 0
+const dcSpectral = 0 //Значение DC скана в Spec selection
+const compByteLen = 2
 
 // =========== Константы для сегмента DHT ===========
 // Таблицы квантования из спецификации

@@ -1,7 +1,6 @@
 package shared
 
 import (
-	"jpeg/internal/mcu"
 	"math"
 )
 
@@ -84,15 +83,29 @@ func (cur *YCbCr) ToRGB(res *Rgb) {
 }
 
 // Создание пустого блока размерами [height][width] из MCU(8х8) в YCbCr
-func CreateYCbCrBlock(height byte, width byte) [][]YCbCrMatrix {
+func CreateYCbCrBlock(height byte, width byte, unitRowCount int, unitColCount int) [][]YCbCrMatrix {
 	res := make([][]YCbCrMatrix, height)
 	for i := range height {
 		res[i] = make([]YCbCrMatrix, width)
 		for j := range width {
-			res[i][j] = CreateMatrix[YCbCr](mcu.UnitRowCount, mcu.UnitColCount)
+			res[i][j] = CreateMatrix[YCbCr](unitRowCount, unitColCount)
 		}
 	}
 	return res
+}
+
+// Вычисление категории в соответствии с F.1
+func FindCategory(val int16) byte {
+	if val == 0 {
+		return 0
+	}
+
+	abs := int16(math.Abs(float64(val)))
+	n := byte(0)
+	for (1 << n) <= abs {
+		n++
+	}
+	return n
 }
 
 // Копирует данные матрицы src в матрицу dst
@@ -138,6 +151,13 @@ func MatrixMap[T any](matrix [][]T, f func(elm *T)) {
 		for _, elm := range row {
 			f(&elm)
 		}
+	}
+}
+
+// Слияние двух ассоциативных массивов в левый аргумент с суммированием конфликтов
+func MergeInto[T Number](left, right map[T]int) {
+	for k, v := range right {
+		left[k] += v
 	}
 }
 

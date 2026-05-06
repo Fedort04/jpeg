@@ -14,6 +14,7 @@ import (
 )
 
 const encoderBaselinePath = "encoder/pics/Baseline/"
+const encoderProgressivePath = "encoder/pics/Progressive/"
 
 // Создает директорию по указанному пути и названию
 // filePath - полный путь, включая имя файла (например: /home/user/newdir/file.txt)
@@ -239,7 +240,7 @@ func Common(files string) shared.Image {
 // Для кодировщика (использует декодер при тестировании)
 
 // Закодировать изображение
-func encodeImage(filepath string, img shared.Image) {
+func encodeImage(filepath string, img shared.Image, isProgressive bool) {
 	file, err := os.Create(filepath)
 	if err != nil {
 		fmt.Println(err.Error())
@@ -250,13 +251,20 @@ func encodeImage(filepath string, img shared.Image) {
 	quantY := encoder.CreateOneTable()
 	quantColor := encoder.CreateOneTable()
 	jpgEncoder, err := encoder.CreateEncoder(writer, img, quantY, quantColor)
+	jpgEncoder.Format = encoder.Both
 	if err != nil {
 		log.Fatal(err.Error())
 		return
 	}
 
-	if _, err := jpgEncoder.StartBaseline(0); err != nil {
-		log.Fatal(err.Error())
+	if isProgressive {
+		if _, err := jpgEncoder.StartProgressive(0); err != nil {
+			log.Fatal(err.Error())
+		}
+	} else {
+		if _, err := jpgEncoder.StartBaseline(0); err != nil {
+			log.Fatal(err.Error())
+		}
 	}
 	writer.Flush()
 
@@ -271,6 +279,8 @@ func main() {
 
 	for i := 1; i < len(os.Args); i++ {
 		filename := GetFileName(os.Args[i])
-		encodeImage(encoderBaselinePath+filename+".jpg", Common(os.Args[i]))
+		// Тестирование Baseline кодировки
+		// encodeImage(encoderBaselinePath+filename+".jpg", Common(os.Args[i]), false)
+		encodeImage(encoderProgressivePath+filename+".jpeg", Common(os.Args[i]), true)
 	}
 }

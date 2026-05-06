@@ -9,3 +9,6 @@ ProgressiveAll:
 
 BaselineAll:
 	go run main.go ${JPG_BASELINE}
+
+Test:
+	go run main.go decoder/pics/Progressive/Aida.jpg
