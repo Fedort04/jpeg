@@ -4,13 +4,17 @@ import "jpeg/shared"
 
 // Константы для кодирования
 
-const samplePrecision = 8               //Глубина цвета
-const defaultRestartInterval = 5        //restartInterval по умолчанию
-var defaultYSpectral = []byte{1, 5, 63} //Для яркости по умолчанию
-const defaultYapprox = 2
+const samplePrecision = 8        //Глубина цвета
+const defaultRestartInterval = 5 //restartInterval по умолчанию
+const approxSS = 1               //SS для сканов аппроксимации
+const approxSE = 63              //SE для сканов аппроксимации
+const defaultDCApprox = OneBit
 
-var defaultCSpectral = []byte{1, 63} //Для цвета по умолчанию
-const defaultCapprox = 1
+var defaultYSpectral = []byte{0, 5, 63} //Для яркости по умолчанию
+const defaultYapprox = TwoBits
+
+var defaultCSpectral = []byte{0, 63} //Для цвета по умолчанию
+const defaultCapprox = OneBit
 
 // ID таблиц для компонент
 var tableIds = map[byte]byte{

@@ -175,6 +175,18 @@ func TestWriteBitsVariants(t *testing.T) {
 			},
 			expected: []byte{0xA9, 0b10000000}, // 1010 100 11 -> 10101001 10000000
 		},
+		{
+			name: "Случай из кодировщика",
+			calls: []struct {
+				val byte
+				len byte
+			}{
+				{0x0, 2}, // 00
+				{0b11111010, 8},
+				{0b0010, 4},
+			},
+			expected: []byte{0b00111110, 0b10001000},
+		},
 	}
 
 	for _, tt := range tests {
@@ -348,4 +360,124 @@ func TestMultipleWrites(t *testing.T) {
 	}
 
 	t.Logf("Записано %d байт: % X", buf.Len(), buf.Bytes())
+}
+
+func TestMergeInto(t *testing.T) {
+	tests := []struct {
+		name     string
+		ops1     func(w *BinWriter)
+		ops2     func(w *BinWriter)
+		expected []byte
+	}{
+		{
+			name:     "Только байты",
+			ops1:     func(w *BinWriter) { w.WriteArray([]byte{0x01, 0x02}) },
+			ops2:     func(w *BinWriter) { w.WriteArray([]byte{0x03, 0x04}) },
+			expected: []byte{0x01, 0x02, 0x03, 0x04},
+		},
+		{
+			name: "Биты с проверкой на FF",
+			ops1: func(w *BinWriter) {
+				w.WriteByte(0x0F)
+				w.WriteBits(w.CreateBitsArray(0b11110011, 8))
+				w.WriteBits(w.CreateBitsArray(0b111, 3))
+			},
+			ops2: func(w *BinWriter) {
+				w.WriteBits(w.CreateBitsArray(0b11111, 5))
+				w.WriteBits(w.CreateBitsArray(0b11000000, 8))
+			},
+			expected: []byte{0x0F, 0xF3, 0xFF, 0x00, 0xC0},
+		},
+		{
+			name: "Случай из кодировщика 1",
+			ops1: func(w *BinWriter) {
+				w.WriteBits(w.CreateBitsArray(0b0, 4))
+			},
+			ops2: func(w *BinWriter) {
+				w.WriteByte(0x3f)
+			},
+			expected: []byte{0b00000011, 0b11110000},
+		},
+		{
+			name: "Случай из кодировщика 2",
+			ops1: func(w *BinWriter) {
+				w.WriteBits(w.CreateBitsArray(0b0, 1))
+				buf2 := &bytes.Buffer{}
+				w2 := LocalBinWriterInit(buf2)
+				w2.WriteBits(w2.CreateBitsArray(0xff, 8))
+				w.MergeFrom(w2)
+			},
+			ops2: func(w *BinWriter) {
+				w.WriteBits(w.CreateBitsArray(0xb, 4))
+			},
+			expected: []byte{0b01111111, 0b11011000},
+		},
+		{
+			name:     "Биты без выравнивания",
+			ops1:     func(w *BinWriter) { w.WriteBits([]bool{true, false, true}) /*101*/ },
+			ops2:     func(w *BinWriter) { w.WriteBits([]bool{false, true, true}) /*011*/ },
+			expected: []byte{0xAC}, //10101100
+		},
+		{
+			name: "Байты и биты, затем снова байты",
+			ops1: func(w *BinWriter) {
+				w.WriteByte(0xFF)
+			},
+			ops2: func(w *BinWriter) {
+				w.WriteWord(0xAACC)
+				w.WriteBits([]bool{true, true})
+				w.WriteBits(w.CreateBitsArray(0xDB, 8))
+			},
+			expected: []byte{0xFF, 0xAA, 0xCC, 0xF6, 0xC0},
+		},
+		{
+			name: "Больше битов без выравнивания",
+			ops1: func(w *BinWriter) {
+				w.WriteBits([]bool{true, false, false, true})
+			},
+			ops2: func(w *BinWriter) {
+				w.WriteBits([]bool{true, false})
+				w.WriteBits([]bool{false, true, false})
+			},
+			expected: []byte{0x99, 0},
+		},
+		{
+			name: "Один объект в другой, а затем его в основной",
+			ops1: func(w *BinWriter) {
+				w.WriteBits([]bool{true, false, false, true})
+			},
+			ops2: func(w *BinWriter) {
+				w.WriteBits([]bool{true, false})
+				buf2 := &bytes.Buffer{}
+				w2 := LocalBinWriterInit(buf2)
+				w2.WriteBits([]bool{false, true, false})
+				w.MergeFrom(w2)
+			},
+			expected: []byte{0x99, 0},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf1 := &bytes.Buffer{}
+			w1 := BinWriterInit(bufio.NewWriter(buf1))
+			tt.ops1(w1)
+
+			buf2 := &bytes.Buffer{}
+			w2 := LocalBinWriterInit(buf2)
+			tt.ops2(w2)
+
+			err := w1.MergeFrom(w2)
+			if err != nil {
+				t.Fatalf("MergeInto error: %v", err)
+			}
+
+			w1.Close()
+
+			result := buf1.Bytes()
+			if !bytes.Equal(result, tt.expected) {
+				t.Errorf("Expected % X, got % X", tt.expected, result)
+			}
+		})
+	}
 }

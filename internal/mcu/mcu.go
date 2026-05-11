@@ -286,12 +286,21 @@ func channelHist(row []int16, ss byte, se byte) map[uint16]int {
 	return res
 }
 
+func Truncate(v int16, app byte) int16 {
+	if app == 0 {
+		return v
+	}
+	divisor := int16(1 << app)
+	return v / divisor
+}
+
 // Гистограмма частоты для прогрессива
-func ChannelHistProg(row []int16, ss byte, se byte, eobCounter *int) map[uint16]int {
+func ChannelHistProg(row []int16, ss byte, se byte, app byte, eobCounter *int) map[uint16]int {
 	res := make(map[uint16]int)
 	allZero := true
 	for k := ss; k <= se; k++ {
-		if row[k] != 0 {
+		temp := Truncate(row[k], app)
+		if temp != 0 {
 			allZero = false
 			break
 		}
@@ -311,7 +320,7 @@ func ChannelHistProg(row []int16, ss byte, se byte, eobCounter *int) map[uint16]
 	var zeroCounter byte
 
 	for k := ss; k <= se; k++ {
-		val := row[k]
+		val := Truncate(row[k], app)
 		if val == 0 {
 			zeroCounter++
 			continue
@@ -349,5 +358,63 @@ func (block *CodingBlock) GetChannelHist(ch byte, ss byte, se byte) map[uint16]i
 		shared.MergeInto(res, channelHist(block.Cr, ss, se))
 	}
 
+	return res
+}
+
+// Получение гистограммы частоты встречаемых символов канала ch для refinement скана
+func GetRefinementHist(row []int16, app byte, eobCounter *int) map[uint16]int {
+	res := make(map[uint16]int)
+
+	allZero := true
+	for k := 1; k <= 63; k++ {
+		val := Truncate(row[k], app)
+		if val != 0 && shared.CheckHistory(row[k], app) {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		*eobCounter++
+		return res
+	}
+
+	var zeroCounter byte
+	var afterLast bool
+
+	for k := 1; k <= 63; k++ {
+		val := Truncate(row[k], app)
+		if val == 0 {
+			zeroCounter++
+			continue
+		}
+
+		// ZRL для каждых 16 нулей
+		for zeroCounter >= 16 {
+			if *eobCounter != 0 {
+				ssss := shared.FindCategory(int16(*eobCounter)) - 1
+				res[uint16(ssss<<4)]++
+				*eobCounter = 0
+			}
+			res[shared.ZRL]++
+			zeroCounter -= 16
+		}
+
+		if shared.CheckHistory(row[k], app) {
+			if *eobCounter != 0 {
+				ssss := shared.FindCategory(int16(*eobCounter)) - 1
+				res[uint16(ssss)<<4]++
+				*eobCounter = 0
+			}
+			res[uint16(zeroCounter<<4)+1]++
+			zeroCounter = 0
+			afterLast = false
+		} else {
+			afterLast = true
+		}
+	}
+
+	if zeroCounter > 0 || afterLast {
+		*eobCounter++
+	}
 	return res
 }

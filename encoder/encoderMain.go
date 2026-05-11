@@ -2,6 +2,7 @@ package encoder
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	binwriter "jpeg/internal/binWriter"
 	"jpeg/internal/huffman"
@@ -19,17 +20,27 @@ const (
 	Both                           //4:2:0
 )
 
+// Типы форматов аппроксимации
+type ApproxFormat byte
+
+const (
+	ZeroBit ApproxFormat = iota //Без аппроксимации
+	OneBit                      //Один бит аппроксимирован
+	TwoBits                     //Два бита аппроксимированы
+)
+
 type Encoder struct {
-	Format EncodeFormat //Формат прореживания (по умолчанию 4:2:0)
+	Subsampling EncodeFormat //Формат прореживания (по умолчанию 4:2:0)
 
 	// Не используется при Progressive кодировании
 	RestartInterval byte //Интервал перезапуска дельта кодирования (по умолчанию 5)
 
 	// Не используется при Baseline кодировании
-	Yspectral []byte //SpectralSelection яркости (по умолчанию [1, 5, 63])
-	Cspectral []byte //SpectralSelection цвета (по умолчанию [1, 63])
-	Yapprox   byte   //Аппроксимация яркости (по умолчанию 2)
-	Capprox   byte   //Аппроксимация цвета (по умолчанию 1)
+	Yspectral []byte       //SpectralSelection яркости (по умолчанию [1, 5, 63])
+	Cspectral []byte       //SpectralSelection цвета (по умолчанию [1, 63])
+	DCApprox  ApproxFormat //Аппроксимация DC коэффициентов
+	Yapprox   ApproxFormat //Аппроксимация яркости (по умолчанию 2)
+	Capprox   ApproxFormat //Аппроксимация цвета (по умолчанию 1)
 
 	//private:
 	writer          *binwriter.BinWriter //Объект для записи файла
@@ -46,6 +57,9 @@ type Encoder struct {
 	cv              byte                 //Вертикальный фактор цвета
 	maxH            byte                 //Максимальный H фактор
 	maxV            byte                 //Максимальный V фактор
+	curDCApp        byte                 //Текущее значение аппроксимации для DC
+	curYApp         byte                 //Текущее значение аппроксимации для Y
+	curCApp         byte                 //Текущее значение аппроксимации для цвета
 	numBlocksHeight uint16               //Количество блоков mcu в изображении по высоте
 	numBlocksWidth  uint16               //Количество блоков mcu в изображении по ширине
 	blockVSize      byte                 //Размер блока по вертикали
@@ -58,6 +72,7 @@ type Encoder struct {
 	mcuCounter      byte                 //Счетчик для restartInterval
 	restartCounter  byte                 //Счетчик кол-ва рестартов в потоке
 	eobCounter      int                  //Счетчик EOB
+	eobBuffer       *binwriter.BinWriter //Буфер для записи refinement EOB
 }
 
 // Конструктор объекта кодирования
@@ -66,11 +81,12 @@ func CreateEncoder(dst *bufio.Writer, data shared.Image, quantTableY [][]byte, q
 	encoder.data = &data
 	shared.CopyToMatrix(quantTableY, &encoder.quantTableY)
 	shared.CopyToMatrix(quantTableColor, &encoder.quantTableColor)
-	encoder.Format = Both
+	encoder.Subsampling = Both
 	encoder.RestartInterval = defaultRestartInterval
 	// Для прогрессива
 	encoder.Yspectral = defaultYSpectral
 	encoder.Cspectral = defaultCSpectral
+	encoder.DCApprox = defaultDCApprox
 	encoder.Yapprox = defaultYapprox
 	encoder.Capprox = defaultCapprox
 
@@ -243,9 +259,9 @@ func (jpeg *Encoder) writeBaselineScanHeader(blocks [][]mcu.CodingBlock) error {
 	//Записать таблицы Хаффмана
 	jpeg.yDCHuff = se.writeHuffTable(0, 0, yDCBits[:], yDCSymbols[:])
 	jpeg.cDCHuff = se.writeHuffTable(0, 1, cDCBits[:], cDCSymbols[:])
-	bits, huffval := huffman.MakeHuffTable(jpeg.histFound(blocks, 0, baselineSS+1, baselineSE, false))
+	bits, huffval := huffman.MakeHuffTable(jpeg.histFound(blocks, 0, baselineSS+1, baselineSE, 0, false))
 	jpeg.yACHuff = se.writeHuffTable(1, 0, bits, huffval)
-	bits, huffval = huffman.MakeHuffTable(jpeg.histFound(blocks, 1, baselineSS+1, baselineSE, false))
+	bits, huffval = huffman.MakeHuffTable(jpeg.histFound(blocks, 1, baselineSS+1, baselineSE, 0, false))
 	jpeg.cACHuff = se.writeHuffTable(1, 1, bits, huffval)
 	//Записать DRI
 	se.writeDri()
@@ -302,7 +318,7 @@ func (jpeg *Encoder) writeProgressiveScan(blocks [][]mcu.CodingBlock, head *scan
 
 	} else { //AC скан
 		jpeg.eobCounter = 0
-		bits, huffval := huffman.MakeHuffTable(jpeg.histFound(blocks, head.comps[0].selector-1, head.ss, head.se, true))
+		bits, huffval := huffman.MakeHuffTable(jpeg.histFound(blocks, head.comps[0].selector-1, head.ss, head.se, head.al, true))
 		huff := se.writeHuffTable(1, head.comps[0].acTable, bits, huffval)
 		se.writeSos(head)
 		if se.err != nil {
@@ -311,6 +327,44 @@ func (jpeg *Encoder) writeProgressiveScan(blocks [][]mcu.CodingBlock, head *scan
 
 		jpeg.eobCounter = 0
 		if err := jpeg.encodeProgressiveAC(blocks, head.comps[0].selector-1, huff, head.ss, head.se); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// Запись refinement скана
+func (jpeg *Encoder) writeRefinementScan(blocks [][]mcu.CodingBlock, head *scanHeader) error {
+	se := stickyEncoder{encoder: jpeg}
+
+	if len(head.comps) == shared.NumOfChannels { //DC скан
+		if err := jpeg.writeSos(head); err != nil {
+			return err
+		}
+		if err := shared.MatrixMapError(blocks, func(elm *mcu.CodingBlock) error {
+			if err := jpeg.encodeRefineDC(elm); err != nil {
+				return err
+			}
+			return nil
+			//Конец лямбды
+		}); err != nil {
+			return err
+		}
+
+	} else { //AC скан
+		jpeg.eobCounter = 0
+		bits, huffval := huffman.MakeHuffTable(jpeg.histRefinement(blocks, head.comps[0].selector-1, head.al))
+		huff := se.writeHuffTable(1, head.comps[0].acTable, bits, huffval)
+		se.writeSos(head)
+		if se.err != nil {
+			return se.err
+		}
+
+		//Кодим скан
+		jpeg.eobCounter = 0
+		jpeg.eobBuffer = binwriter.LocalBinWriterInit(&bytes.Buffer{})
+		if err := jpeg.encodeRefinementAC(blocks, head.comps[0].selector-1, huff); err != nil {
 			return err
 		}
 	}
@@ -343,6 +397,78 @@ func (jpeg *Encoder) prepare() [][]mcu.CodingBlock {
 		elm.Quantization(shared.MultMatrixOnNumber(jpeg.quantTableY, mcu.DCTQuantCoeff), shared.MultMatrixOnNumber(jpeg.quantTableColor, mcu.DCTQuantCoeff))
 	})
 	return jpeg.zigZag(blocks)
+}
+
+// Кодирование первых сканов progressive
+func (jpeg *Encoder) commonScans(codingBlocks [][]mcu.CodingBlock) error {
+	//DC (все компоненты)
+	se := &stickyEncoder{encoder: jpeg}
+	compArray := make([]component, shared.NumOfChannels)
+	for i := range byte(shared.NumOfChannels) {
+		curSelector := i + 1
+		compArray[i] = component{selector: curSelector, dcTable: tableIds[curSelector]}
+	}
+	head := scanHeader{
+		marker: shared.SOS,
+		ss:     dcSpectral,
+		se:     dcSpectral,
+		ah:     0,
+		al:     byte(jpeg.DCApprox),
+	}
+	head.setComps(compArray)
+
+	se.writeProgressiveScan(codingBlocks, &head)
+	jpeg.curDCApp--
+
+	//AC
+	stop := false
+	for i := 1; !stop; i++ {
+		notlum, notcolor := true, true
+		if i < len(jpeg.Yspectral) {
+			head.ss = jpeg.Yspectral[i-1] + 1
+			head.se = jpeg.Yspectral[i]
+			head.al = byte(jpeg.Yapprox)
+			compArray = make([]component, 1)
+			compArray[0].selector = 1
+			compArray[0].acTable = 0
+			compArray[0].dcTable = 0
+			head.setComps(compArray)
+			se.writeProgressiveScan(codingBlocks, &head)
+			if se.err != nil {
+				return se.err
+			}
+			notlum = false
+		}
+
+		if i < len(jpeg.Cspectral) {
+			//cr
+			head.ss = jpeg.Cspectral[i-1] + 1
+			head.se = jpeg.Cspectral[i]
+			head.al = byte(jpeg.Capprox)
+			compArray = make([]component, 1)
+			compArray[0].selector = 3
+			compArray[0].acTable = 1
+			compArray[0].dcTable = 0
+			head.setComps(compArray)
+			se.writeProgressiveScan(codingBlocks, &head)
+			//cb
+			head.comps[0].selector = 2
+			se.writeProgressiveScan(codingBlocks, &head)
+			if se.err != nil {
+				return se.err
+			}
+			notcolor = false
+		}
+		stop = notcolor && notlum
+	}
+
+	if jpeg.Yapprox != ZeroBit {
+		jpeg.curYApp--
+	}
+	if jpeg.Capprox != ZeroBit {
+		jpeg.curCApp--
+	}
+	return nil
 }
 
 // По вызову функции выполняется Baseline кодирование
@@ -383,60 +509,85 @@ func (jpeg *Encoder) StartProgressive(numOfScans byte) (bool, error) {
 	se.writeHeader(true)
 
 	//Первый проход (без approx)
-	//DC (все компоненты)
-	compArray := make([]component, shared.NumOfChannels)
-	for i := range byte(shared.NumOfChannels) {
-		curSelector := i + 1
-		compArray[i] = component{selector: curSelector, dcTable: tableIds[curSelector]}
+	if err := jpeg.commonScans(codingBlocks); err != nil {
+		return false, err
 	}
-	head := scanHeader{
-		marker: shared.SOS,
-		ss:     dcSpectral,
-		se:     dcSpectral,
-		ah:     0,
-		al:     0,
-	}
-	head.setComps(compArray)
 
-	se.writeProgressiveScan(codingBlocks, &head)
-
-	stop := false
-	for i := 1; !stop; i++ {
-		notlum, notcolor := true, true
-		if i < len(jpeg.Yspectral) {
-			head.ss = jpeg.Yspectral[i-1]
-			head.se = jpeg.Yspectral[i]
-			compArray = make([]component, 1)
-			compArray[0].selector = 1
-			compArray[0].acTable = 0
-			compArray[0].dcTable = 0
-			head.setComps(compArray)
-			se.writeProgressiveScan(codingBlocks, &head)
-			if se.err != nil {
-				return false, se.err
+	//Проходы с аппроксимацией
+	for i := int(TwoBits); i >= 0; i-- {
+		if jpeg.curDCApp == byte(i) && jpeg.DCApprox != ZeroBit {
+			head := scanHeader{
+				marker: shared.SOS,
+				ss:     0,
+				se:     0,
+				ah:     0,
+				al:     jpeg.curDCApp,
 			}
-			notlum = false
+			if jpeg.curDCApp+1 <= byte(TwoBits) {
+				head.ah = jpeg.curDCApp + 1
+			}
+			compArray := make([]component, shared.NumOfChannels)
+			for i := range byte(shared.NumOfChannels) {
+				curSelector := i + 1
+				compArray[i] = component{selector: curSelector, dcTable: 0}
+			}
+			head.setComps(compArray)
+			se.writeRefinementScan(codingBlocks, &head)
 		}
 
-		if i < len(jpeg.Cspectral) {
+		if jpeg.curCApp == byte(i) && jpeg.Capprox != ZeroBit {
+			head := scanHeader{
+				marker: shared.SOS,
+				ss:     approxSS,
+				se:     approxSE,
+				ah:     0,
+				al:     jpeg.curCApp,
+			}
+			if jpeg.curCApp+1 <= byte(TwoBits) {
+				head.ah = jpeg.curCApp + 1
+			}
+
 			//cr
-			head.ss = jpeg.Cspectral[i-1]
-			head.se = jpeg.Cspectral[i]
-			compArray = make([]component, 1)
+			compArray := make([]component, 1)
 			compArray[0].selector = 3
 			compArray[0].acTable = 1
 			compArray[0].dcTable = 0
 			head.setComps(compArray)
-			se.writeProgressiveScan(codingBlocks, &head)
+			se.writeRefinementScan(codingBlocks, &head)
+
 			//cb
-			head.comps[0].selector = 2
-			se.writeProgressiveScan(codingBlocks, &head)
+			compArray[0].selector = 2
+			head.setComps(compArray)
+			se.writeRefinementScan(codingBlocks, &head)
 			if se.err != nil {
 				return false, se.err
 			}
-			notcolor = false
+			jpeg.curCApp--
 		}
-		stop = notcolor && notlum
+
+		//Y
+		if jpeg.curYApp == byte(i) && jpeg.Yapprox != ZeroBit {
+			head := scanHeader{
+				marker: shared.SOS,
+				ss:     approxSS,
+				se:     approxSE,
+				ah:     0,
+				al:     jpeg.curYApp,
+			}
+			if jpeg.curYApp+1 <= byte(TwoBits) {
+				head.ah = jpeg.curYApp + 1
+			}
+			compArray := make([]component, 1)
+			compArray[0].selector = 1
+			compArray[0].acTable = 0
+			compArray[0].dcTable = 0
+			head.setComps(compArray)
+			se.writeRefinementScan(codingBlocks, &head)
+			if se.err != nil {
+				return false, se.err
+			}
+			jpeg.curYApp--
+		}
 	}
 
 	se.writeEndImg()

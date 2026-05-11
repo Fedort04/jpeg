@@ -2,6 +2,8 @@ package binwriter
 
 import (
 	"bufio"
+	"bytes"
+	"errors"
 )
 
 // Данные хранятся во внутреннем буфере до вызова Close()
@@ -9,6 +11,8 @@ type BinWriter struct {
 	w    *bufio.Writer // направление записи
 	buf  byte          // текущий накапливаемый байт для битов
 	bits byte          // количество накопленных бито
+
+	buffer *bytes.Buffer //буфер для временного объекта, который позволяет его слить с другим
 }
 
 // Конструктор объекта BinWriter
@@ -18,6 +22,45 @@ func BinWriterInit(source *bufio.Writer) *BinWriter {
 	res.buf = 0
 	res.bits = 0
 	return &res
+}
+
+// Конструктор временного объекта BinWriter, который затем предполагается влить в глобальный BinWriter
+func LocalBinWriterInit(buf *bytes.Buffer) *BinWriter {
+	return &BinWriter{
+		w:      bufio.NewWriter(buf),
+		buffer: buf,
+	}
+}
+
+// MergeFrom переносит все данные из src без выравнивания.
+// src должен быть создан через LocalBinWriterInit().
+func (b *BinWriter) MergeFrom(src *BinWriter) error {
+	if err := src.w.Flush(); err != nil {
+		return err
+	}
+	if src.buffer == nil {
+		return errors.New("Src must be created with LocalBinWriterInit()")
+	}
+
+	data := src.buffer.Bytes()
+	for _, i := range data {
+		if err := b.WriteBits(b.CreateBitsArray(uint16(i), 8)); err != nil {
+			return err
+		}
+	}
+	src.buffer.Reset()
+
+	// Переносим незавершённые биты src
+	for i := byte(0); i < src.bits; i++ {
+		bit := (src.buf >> (7 - i)) & 1
+		if err := b.WriteBit(bit == 1); err != nil {
+			return err
+		}
+	}
+	src.buf = 0
+	src.bits = 0
+
+	return nil
 }
 
 // Записывает накопленный байт (если есть незавершённые биты) в bufio.Writer
@@ -62,7 +105,7 @@ func (b *BinWriter) WriteBit(bit bool) error {
 		if err := b.w.WriteByte(b.buf); err != nil {
 			return err
 		}
-		if b.buf == 0xFF { //После xFF записать 00
+		if b.buf == 0xFF && b.buffer == nil { //После xFF записать 00 (если не локальный)
 			if err := b.w.WriteByte(0); err != nil {
 				return err
 			}

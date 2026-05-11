@@ -108,6 +108,17 @@ func FindCategory(val int16) byte {
 	return n
 }
 
+// Асболютное значение
+func Abs[T Number](val T) T {
+	return T(math.Abs(float64(val)))
+}
+
+// Проверка, был ли значимым этот коэфф в предыдущем скане аппроксимации
+// Передача оригинального значения
+func CheckHistory(val int16, app byte) bool {
+	return Abs(val)>>app == 1
+}
+
 // Копирует данные матрицы src в матрицу dst
 func CopyToMatrix[T any](src [][]T, dst *[][]T) {
 	if src == nil {
@@ -172,6 +183,19 @@ func MatrixMapError[T any](matrix [][]T, f func(elm *T) error) error {
 		}
 	}
 	return nil
+}
+
+// Сравнение двух слайсов
+func CompareSlices[T Number](a, b []T) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // @todo полезный, но не подходит((

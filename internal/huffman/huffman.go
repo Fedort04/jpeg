@@ -47,14 +47,6 @@ func adjustBits(bits []int) {
 	}
 }
 
-func Sum(numbers []int) int {
-	sum := 0
-	for _, num := range numbers {
-		sum += num
-	}
-	return sum
-}
-
 // MakeHuffTable строит таблицу Хаффмана по алгоритму JPEG (Annex K.2 / libjpeg)
 func MakeHuffTable(hist map[uint16]int) ([]byte, []byte) {
 

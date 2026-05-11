@@ -251,7 +251,9 @@ func encodeImage(filepath string, img shared.Image, isProgressive bool) {
 	quantY := encoder.CreateOneTable()
 	quantColor := encoder.CreateOneTable()
 	jpgEncoder, err := encoder.CreateEncoder(writer, img, quantY, quantColor)
-	jpgEncoder.Format = encoder.Both
+	jpgEncoder.DCApprox = encoder.TwoBits
+	jpgEncoder.Yapprox = encoder.TwoBits
+	jpgEncoder.Capprox = encoder.TwoBits
 	if err != nil {
 		log.Fatal(err.Error())
 		return

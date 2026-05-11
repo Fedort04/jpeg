@@ -124,6 +124,13 @@ func (se *stickyEncoder) writeProgressiveScan(blocks [][]mcu.CodingBlock, head *
 	se.err = se.encoder.writeProgressiveScan(blocks, head)
 }
 
+func (se *stickyEncoder) writeRefinementScan(blocks [][]mcu.CodingBlock, head *scanHeader) {
+	if se.err != nil {
+		return
+	}
+	se.err = se.encoder.writeRefinementScan(blocks, head)
+}
+
 func (se *stickyEncoder) writeSos(config *scanHeader) {
 	if se.err != nil {
 		return
