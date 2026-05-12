@@ -185,6 +185,24 @@ func MatrixMapError[T any](matrix [][]T, f func(elm *T) error) error {
 	return nil
 }
 
+// map функция для матрицы. Применяет f() к каждому элементу матрицы в порядке слева-направо сверху-вниз
+// Вариант, который обрабатывает возникающие ошибки и выполняет заданное количество строк
+func MatrixMapRows[T any](matrix [][]T, startRow, numOfRows uint16, f func(elm *T) error) error {
+	for i := startRow; i < startRow+numOfRows; i++ {
+		if i >= uint16(len(matrix)) {
+			return nil
+		}
+
+		row := matrix[i]
+		for _, elm := range row {
+			if err := f(&elm); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // Сравнение двух слайсов
 func CompareSlices[T Number](a, b []T) bool {
 	if len(a) != len(b) {

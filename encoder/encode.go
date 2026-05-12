@@ -45,9 +45,6 @@ func (jpeg *Encoder) convertToYCbCr() shared.YCbCrMatrix {
 func (jpeg *Encoder) factorUpdate() {
 	jpeg.ch = 1
 	jpeg.cv = 1
-	jpeg.curDCApp = byte(jpeg.DCApprox)
-	jpeg.curYApp = byte(jpeg.Yapprox)
-	jpeg.curCApp = byte(jpeg.Capprox)
 
 	switch jpeg.Subsampling {
 	case Without:

@@ -117,18 +117,22 @@ func (se *stickyEncoder) writeBaselineScanHeader(blocks [][]mcu.CodingBlock) {
 	se.err = se.encoder.writeBaselineScanHeader(blocks)
 }
 
-func (se *stickyEncoder) writeProgressiveScan(blocks [][]mcu.CodingBlock, head *scanHeader) {
+func (se *stickyEncoder) writeProgressiveScan(blocks [][]mcu.CodingBlock, head *scanHeader) bool {
 	if se.err != nil {
-		return
+		return false
 	}
-	se.err = se.encoder.writeProgressiveScan(blocks, head)
+	res, err := se.encoder.writeProgressiveScan(blocks, head)
+	se.err = err
+	return res
 }
 
-func (se *stickyEncoder) writeRefinementScan(blocks [][]mcu.CodingBlock, head *scanHeader) {
+func (se *stickyEncoder) writeRefinementScan(blocks [][]mcu.CodingBlock, head *scanHeader) bool {
 	if se.err != nil {
-		return
+		return false
 	}
-	se.err = se.encoder.writeRefinementScan(blocks, head)
+	res, err := se.encoder.writeRefinementScan(blocks, head)
+	se.err = err
+	return res
 }
 
 func (se *stickyEncoder) writeSos(config *scanHeader) {

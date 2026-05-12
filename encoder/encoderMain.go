@@ -73,6 +73,12 @@ type Encoder struct {
 	restartCounter  byte                 //Счетчик кол-ва рестартов в потоке
 	eobCounter      int                  //Счетчик EOB
 	eobBuffer       *binwriter.BinWriter //Буфер для записи refinement EOB
+	codingBlocks    [][]mcu.CodingBlock  //Подготовленные для кодирования данные
+
+	curStatus    uint16 //Текущее состояние кодирования
+	targetStatus byte   //Сколько должно быть сканов после текущего прохода
+	numOfScans   byte   //Количество сканов в изображении
+	forSkip      byte   //Для продолжения сканирования со старого места
 }
 
 // Конструктор объекта кодирования
@@ -294,7 +300,12 @@ func (jpeg *Encoder) writeBaselineScanHeader(blocks [][]mcu.CodingBlock) error {
 
 // Запись заголовка скана (предварительно записываются таблицы Хаффмана и DRI)
 // Реализация для Progressive
-func (jpeg *Encoder) writeProgressiveScan(blocks [][]mcu.CodingBlock, head *scanHeader) error {
+func (jpeg *Encoder) writeProgressiveScan(blocks [][]mcu.CodingBlock, head *scanHeader) (bool, error) {
+	if jpeg.forSkip < byte(jpeg.curStatus) {
+		jpeg.forSkip++
+		return false, nil
+	}
+
 	se := stickyEncoder{encoder: jpeg}
 
 	if len(head.comps) == shared.NumOfChannels { //DC скан
@@ -303,7 +314,7 @@ func (jpeg *Encoder) writeProgressiveScan(blocks [][]mcu.CodingBlock, head *scan
 		se.writeSos(head)
 
 		if se.err != nil {
-			return se.err
+			return false, se.err
 		}
 
 		if err := shared.MatrixMapError(blocks, func(elm *mcu.CodingBlock) error {
@@ -313,7 +324,7 @@ func (jpeg *Encoder) writeProgressiveScan(blocks [][]mcu.CodingBlock, head *scan
 			return nil
 			//Конец лямбды
 		}); err != nil {
-			return err
+			return false, err
 		}
 
 	} else { //AC скан
@@ -322,25 +333,31 @@ func (jpeg *Encoder) writeProgressiveScan(blocks [][]mcu.CodingBlock, head *scan
 		huff := se.writeHuffTable(1, head.comps[0].acTable, bits, huffval)
 		se.writeSos(head)
 		if se.err != nil {
-			return se.err
+			return false, se.err
 		}
 
 		jpeg.eobCounter = 0
 		if err := jpeg.encodeProgressiveAC(blocks, head.comps[0].selector-1, huff, head.ss, head.se); err != nil {
-			return err
+			return false, err
 		}
 	}
+	allDone := jpeg.curStatusScanIncrement()
 
-	return nil
+	return allDone, nil
 }
 
 // Запись refinement скана
-func (jpeg *Encoder) writeRefinementScan(blocks [][]mcu.CodingBlock, head *scanHeader) error {
+func (jpeg *Encoder) writeRefinementScan(blocks [][]mcu.CodingBlock, head *scanHeader) (bool, error) {
+	if jpeg.forSkip < byte(jpeg.curStatus) {
+		jpeg.forSkip++
+		return false, nil
+	}
+
 	se := stickyEncoder{encoder: jpeg}
 
 	if len(head.comps) == shared.NumOfChannels { //DC скан
 		if err := jpeg.writeSos(head); err != nil {
-			return err
+			return false, err
 		}
 		if err := shared.MatrixMapError(blocks, func(elm *mcu.CodingBlock) error {
 			if err := jpeg.encodeRefineDC(elm); err != nil {
@@ -349,7 +366,7 @@ func (jpeg *Encoder) writeRefinementScan(blocks [][]mcu.CodingBlock, head *scanH
 			return nil
 			//Конец лямбды
 		}); err != nil {
-			return err
+			return false, err
 		}
 
 	} else { //AC скан
@@ -358,18 +375,19 @@ func (jpeg *Encoder) writeRefinementScan(blocks [][]mcu.CodingBlock, head *scanH
 		huff := se.writeHuffTable(1, head.comps[0].acTable, bits, huffval)
 		se.writeSos(head)
 		if se.err != nil {
-			return se.err
+			return false, se.err
 		}
 
 		//Кодим скан
 		jpeg.eobCounter = 0
 		jpeg.eobBuffer = binwriter.LocalBinWriterInit(&bytes.Buffer{})
 		if err := jpeg.encodeRefinementAC(blocks, head.comps[0].selector-1, huff); err != nil {
-			return err
+			return false, err
 		}
 	}
+	allDone := jpeg.curStatusScanIncrement()
 
-	return nil
+	return allDone, nil
 }
 
 // Запись заголовка файла
@@ -417,7 +435,10 @@ func (jpeg *Encoder) commonScans(codingBlocks [][]mcu.CodingBlock) error {
 	}
 	head.setComps(compArray)
 
-	se.writeProgressiveScan(codingBlocks, &head)
+	if se.writeProgressiveScan(codingBlocks, &head) {
+		jpeg.curDCApp--
+		return se.err
+	}
 	jpeg.curDCApp--
 
 	//AC
@@ -433,7 +454,9 @@ func (jpeg *Encoder) commonScans(codingBlocks [][]mcu.CodingBlock) error {
 			compArray[0].acTable = 0
 			compArray[0].dcTable = 0
 			head.setComps(compArray)
-			se.writeProgressiveScan(codingBlocks, &head)
+			if se.writeProgressiveScan(codingBlocks, &head) {
+				return se.err
+			}
 			if se.err != nil {
 				return se.err
 			}
@@ -450,10 +473,14 @@ func (jpeg *Encoder) commonScans(codingBlocks [][]mcu.CodingBlock) error {
 			compArray[0].acTable = 1
 			compArray[0].dcTable = 0
 			head.setComps(compArray)
-			se.writeProgressiveScan(codingBlocks, &head)
+			if se.writeProgressiveScan(codingBlocks, &head) {
+				return se.err
+			}
 			//cb
 			head.comps[0].selector = 2
-			se.writeProgressiveScan(codingBlocks, &head)
+			if se.writeProgressiveScan(codingBlocks, &head) {
+				return se.err
+			}
 			if se.err != nil {
 				return se.err
 			}
@@ -471,49 +498,9 @@ func (jpeg *Encoder) commonScans(codingBlocks [][]mcu.CodingBlock) error {
 	return nil
 }
 
-// По вызову функции выполняется Baseline кодирование
-func (jpeg *Encoder) StartBaseline(numOfRows uint16) (bool, error) {
-	codingBlocks := jpeg.prepare()
-
-	se := &stickyEncoder{encoder: jpeg}
-	se.writeHeader(false)
-	se.writeBaselineScanHeader(codingBlocks)
-	if se.err != nil {
-		return false, se.err
-	}
-
-	//Начало кодирование потока Хаффмана (не забыть сбросить счетчик рестартов)
-	jpeg.restartCounter = 0
-	if err := shared.MatrixMapError(codingBlocks, func(elm *mcu.CodingBlock) error {
-		if err := jpeg.baselineBlockEncode(elm); err != nil {
-			return err
-		}
-		return nil
-		//Конец лямбды
-	}); err != nil {
-		return false, err
-	}
-
-	if err := jpeg.writeEndImg(); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-// По вызову функции выполняется Progressive кодирование
-func (jpeg *Encoder) StartProgressive(numOfScans byte) (bool, error) {
-	codingBlocks := jpeg.prepare()
-	jpeg.RestartInterval = 0
-	jpeg.restartCounter = 0
-	se := &stickyEncoder{encoder: jpeg}
-	se.writeHeader(true)
-
-	//Первый проход (без approx)
-	if err := jpeg.commonScans(codingBlocks); err != nil {
-		return false, err
-	}
-
-	//Проходы с аппроксимацией
+// Кодирование сканов с аппроксимацией
+func (jpeg *Encoder) approxScans(codingBlocks [][]mcu.CodingBlock) error {
+	se := stickyEncoder{encoder: jpeg}
 	for i := int(TwoBits); i >= 0; i-- {
 		if jpeg.curDCApp == byte(i) && jpeg.DCApprox != ZeroBit {
 			head := scanHeader{
@@ -532,7 +519,11 @@ func (jpeg *Encoder) StartProgressive(numOfScans byte) (bool, error) {
 				compArray[i] = component{selector: curSelector, dcTable: 0}
 			}
 			head.setComps(compArray)
-			se.writeRefinementScan(codingBlocks, &head)
+			if se.writeRefinementScan(codingBlocks, &head) {
+				jpeg.curDCApp--
+				return se.err
+			}
+			jpeg.curDCApp--
 		}
 
 		if jpeg.curCApp == byte(i) && jpeg.Capprox != ZeroBit {
@@ -553,14 +544,19 @@ func (jpeg *Encoder) StartProgressive(numOfScans byte) (bool, error) {
 			compArray[0].acTable = 1
 			compArray[0].dcTable = 0
 			head.setComps(compArray)
-			se.writeRefinementScan(codingBlocks, &head)
+			if se.writeRefinementScan(codingBlocks, &head) {
+				return se.err
+			}
 
 			//cb
 			compArray[0].selector = 2
 			head.setComps(compArray)
-			se.writeRefinementScan(codingBlocks, &head)
+			if se.writeRefinementScan(codingBlocks, &head) {
+				jpeg.curCApp--
+				return se.err
+			}
 			if se.err != nil {
-				return false, se.err
+				return se.err
 			}
 			jpeg.curCApp--
 		}
@@ -582,16 +578,120 @@ func (jpeg *Encoder) StartProgressive(numOfScans byte) (bool, error) {
 			compArray[0].acTable = 0
 			compArray[0].dcTable = 0
 			head.setComps(compArray)
-			se.writeRefinementScan(codingBlocks, &head)
+			if se.writeRefinementScan(codingBlocks, &head) {
+				jpeg.curYApp--
+				return se.err
+			}
 			if se.err != nil {
-				return false, se.err
+				return se.err
 			}
 			jpeg.curYApp--
 		}
 	}
+	return nil
+}
 
-	se.writeEndImg()
-	if se.err != nil {
+// Вычисление количества сканов в изображении
+func (jpeg *Encoder) numOfScansCalc() {
+	jpeg.numOfScans = byte(len(jpeg.Yspectral)-1+(len(jpeg.Cspectral)-1)*2+int(jpeg.DCApprox)+int(jpeg.Yapprox)+int(jpeg.Capprox)*2) + 1
+}
+
+// Изменение текущего статуса сканов
+// Возвращает прочитано ли необходимая часть
+func (jpeg *Encoder) curStatusScanIncrement() bool {
+	jpeg.curStatus++
+	jpeg.forSkip++
+	return jpeg.curStatus >= uint16(jpeg.targetStatus)
+}
+
+// По вызову функции выполняется Baseline кодирование
+func (jpeg *Encoder) StartBaseline(numOfRows uint16) (bool, error) {
+	jpeg.Capprox = ZeroBit
+	jpeg.DCApprox = ZeroBit
+	jpeg.Yapprox = ZeroBit
+	if jpeg.curStatus == 0 {
+		jpeg.codingBlocks = jpeg.prepare()
+		se := &stickyEncoder{encoder: jpeg}
+		se.writeHeader(false)
+		se.writeBaselineScanHeader(jpeg.codingBlocks)
+		if se.err != nil {
+			return false, se.err
+		}
+		jpeg.restartCounter = 0
+	}
+
+	//Начало кодирование потока Хаффмана
+	//Запись построчно
+	startRow := jpeg.curStatus / uint16(jpeg.blockVSize)
+	var deltaRows uint16
+	if numOfRows == 0 {
+		deltaRows = jpeg.realImgHeight
+	} else {
+		deltaRows = (numOfRows + uint16(jpeg.blockVSize) - 1) / uint16(jpeg.blockVSize)
+	}
+	if err := shared.MatrixMapRows(jpeg.codingBlocks, startRow, deltaRows, func(elm *mcu.CodingBlock) error {
+		if err := jpeg.baselineBlockEncode(elm); err != nil {
+			return err
+		}
+		return nil
+		//Конец лямбды
+	}); err != nil {
+		return false, err
+	}
+
+	jpeg.curStatus += deltaRows * uint16(jpeg.blockVSize)
+
+	if jpeg.curStatus >= jpeg.realImgHeight {
+		if err := jpeg.writeEndImg(); err != nil {
+			return false, err
+		}
+	} else {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+// По вызову функции выполняется Progressive кодирование
+func (jpeg *Encoder) StartProgressive(numOfScans byte) (bool, error) {
+	jpeg.numOfScansCalc()
+	jpeg.forSkip = 0
+	jpeg.curDCApp = byte(jpeg.DCApprox)
+	jpeg.curYApp = byte(jpeg.Yapprox)
+	jpeg.curCApp = byte(jpeg.Capprox)
+	if numOfScans == 0 {
+		jpeg.targetStatus = jpeg.numOfScans
+	} else {
+		jpeg.targetStatus = byte(jpeg.curStatus) + numOfScans
+	}
+
+	if jpeg.curStatus == 0 {
+		jpeg.codingBlocks = jpeg.prepare()
+		jpeg.RestartInterval = 0
+		jpeg.restartCounter = 0
+		se := &stickyEncoder{encoder: jpeg}
+		se.writeHeader(true)
+	}
+
+	//Первый проход (без approx)
+	if jpeg.curStatus < uint16(jpeg.targetStatus) {
+		if err := jpeg.commonScans(jpeg.codingBlocks); err != nil {
+			return false, err
+		}
+	}
+
+	//Проходы с аппроксимацией
+	if jpeg.curStatus < uint16(jpeg.targetStatus) {
+		if err := jpeg.approxScans(jpeg.codingBlocks); err != nil {
+			return false, err
+		}
+	}
+
+	if jpeg.curStatus == uint16(jpeg.numOfScans) {
+		if jpeg.writeEndImg() != nil {
+			return false, nil
+		}
+	} else {
 		return false, nil
 	}
 
