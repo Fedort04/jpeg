@@ -54,3 +54,10 @@ func (sw *StickyWriter) FlushBits() {
 	}
 	sw.Err = sw.Writer.FlushBits()
 }
+
+func (sw *StickyWriter) MergeFrom(src *BinWriter) {
+	if sw.Err != nil {
+		return
+	}
+	sw.Err = sw.Writer.MergeFrom(src)
+}

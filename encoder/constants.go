@@ -97,10 +97,6 @@ func (sh *scanHeader) setComps(data []component) {
 // Их значение по умолчанию для Baseline
 const baselineSOSLength = 12
 const baselineColors = 3
-const baselineSS = 0
-const baselineSE = 63
-const baselineAh = 0
-const baselineAl = 0
 const dcSpectral = 0 //Значение DC скана в Spec selection
 const compByteLen = 2
 

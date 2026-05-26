@@ -338,7 +338,7 @@ func ChannelHistProg(row []int16, ss byte, se byte, app byte, eobCounter *int) m
 	}
 
 	if zeroCounter > 0 {
-		res[shared.EndOfBlock]++
+		*eobCounter++
 	}
 	return res
 }

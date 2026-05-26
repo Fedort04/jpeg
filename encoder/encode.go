@@ -190,12 +190,12 @@ func (jpeg *Encoder) writeRestart() error {
 // Умный счетчик для перезапуска дельта-кодирования
 // При необходимости сам записывает сегмент сброса дельты
 func (jpeg *Encoder) restartIncrement() error {
-	jpeg.mcuCounter++
+	jpeg.mcuBlockCounter++
 
 	var err error
-	if jpeg.RestartInterval != 0 && jpeg.mcuCounter >= jpeg.RestartInterval {
+	if jpeg.RestartInterval != 0 && jpeg.mcuBlockCounter >= jpeg.RestartInterval {
 		jpeg.prev = make([]int16, shared.NumOfChannels)
-		jpeg.mcuCounter = 0
+		jpeg.mcuBlockCounter = 0
 		err = jpeg.writeRestart()
 	}
 
@@ -242,7 +242,7 @@ func (jpeg *Encoder) encodeDC(val int16, table *huffman.HuffTable, ch byte) erro
 	se.encodeSymbol(ssss, table)
 	se.encodeAddVal(diff, ssss)
 	if se.err != nil {
-		return errors.New("Can't write a DC symbol\n" + se.err.Error())
+		return errors.New("Error when encode a DC symbol\n" + se.err.Error())
 	}
 
 	return nil
@@ -273,7 +273,7 @@ func (jpeg *Encoder) encodeAC(dataUnit []int16, ss byte, send byte, table *huffm
 		se.encodeAddVal(val, ssss)
 
 		if se.err != nil {
-			return errors.New("Can't write an AC symbol\n" + se.err.Error())
+			return errors.New("Error when encode an AC symbol\n" + se.err.Error())
 		}
 
 		zeroCounter = 0
@@ -298,7 +298,7 @@ func (jpeg *Encoder) dataUnitEncode(dataUnit []int16, channel byte) error {
 
 	se := &stickyEncoder{encoder: jpeg}
 	se.encodeDC(dataUnit[0], dcTable, channel)
-	se.encodeAC(dataUnit, baselineSS+1, baselineSE, acTable)
+	se.encodeAC(dataUnit, shared.BaselineSS+1, shared.BaselineSE, acTable)
 
 	if se.err != nil {
 		return se.err
@@ -324,7 +324,7 @@ func (jpeg *Encoder) baselineBlockEncode(block *mcu.CodingBlock) error {
 
 // Кодирование прогрессивного DC скана
 func (jpeg *Encoder) encodeProgressiveDC(block *mcu.CodingBlock) error {
-	se := stickyEncoder{encoder: jpeg}
+	se := &stickyEncoder{encoder: jpeg}
 	for _, y := range block.Y {
 		se.encodeDC(y[0], jpeg.yDCHuff, byte(mcu.Y))
 	}
@@ -346,11 +346,11 @@ func (jpeg *Encoder) encodeEOB(table *huffman.HuffTable) error {
 	}
 
 	ssss := shared.FindCategory(int16(jpeg.eobCounter)) - 1
-	se := stickyEncoder{encoder: jpeg}
+	se := &stickyEncoder{encoder: jpeg}
 	se.encodeSymbol(ssss<<4, table)
 	se.encodeAddVal(int16(jpeg.addValEob(ssss)), ssss)
 	if se.err != nil {
-		return errors.New("Can't write an End of Band symbol\n" + se.err.Error())
+		return errors.New("Error when encode an End of Band symbol\n" + se.err.Error())
 	}
 
 	jpeg.eobCounter = 0
@@ -382,7 +382,7 @@ func (jpeg *Encoder) encodeEOBAC(dataUnit []int16, ss byte, se byte, app byte, t
 
 	if jpeg.eobCounter != 0 {
 		if err := jpeg.encodeEOB(table); err != nil {
-			return errors.New("Can't write an EOB symbol\n" + err.Error())
+			return err
 		}
 	}
 
@@ -407,14 +407,14 @@ func (jpeg *Encoder) encodeEOBAC(dataUnit []int16, ss byte, se byte, app byte, t
 		seenc.encodeAddVal(val, ssss)
 
 		if seenc.err != nil {
-			return errors.New("Can't write an AC symbol\n" + seenc.err.Error())
+			return errors.New("Error when encode an AC symbol\n" + seenc.err.Error())
 		}
 
 		zeroCounter = 0
 	}
 
 	if zeroCounter > 0 {
-		return jpeg.encodeSymbol(shared.EndOfBlock, table)
+		jpeg.eobCounter++
 	}
 	return nil
 }
@@ -469,18 +469,24 @@ func (jpeg *Encoder) encodeRefinementUnit(row []int16, app byte, table *huffman.
 				tempBuffer = binwriter.LocalBinWriterInit(&bytes.Buffer{})
 				break
 			} else {
-				tempBuffer.WriteBit(val&1 == 1)
+				if err := tempBuffer.WriteBit(val&1 == 1); err != nil {
+					return errors.New("Error when encode an AC Refine value\n" + err.Error())
+				}
 			}
 		}
 	}
 	if allZero {
-		jpeg.eobBuffer.MergeFrom(tempBuffer)
+		if err := jpeg.eobBuffer.MergeFrom(tempBuffer); err != nil {
+			return errors.New("Error when merging AC Refine buffers\n" + err.Error())
+		}
 		jpeg.eobCounter++
 		return nil
 	}
 
 	var zeroCounter byte
 	var afterLast bool
+	sw := &binwriter.StickyWriter{Writer: jpeg.writer}
+	se := &stickyEncoder{encoder: jpeg}
 
 	for k := approxSS; k <= approxSE; k++ {
 		val := Truncate(row[k], app)
@@ -493,45 +499,51 @@ func (jpeg *Encoder) encodeRefinementUnit(row []int16, app byte, table *huffman.
 		// ZRL для каждых 16 нулей
 		for zeroCounter >= 16 {
 			if jpeg.eobCounter != 0 {
-				if err := jpeg.encodeEOB(table); err != nil {
-					return errors.New("Can't write an EOB symbol\n" + err.Error())
-				}
-				jpeg.writer.MergeFrom(jpeg.eobBuffer)
+				se.encodeEOB(table)
+				sw.MergeFrom(jpeg.eobBuffer)
 			}
-			if err := jpeg.encodeSymbol(shared.ZRL, table); err != nil {
-				return err
-			}
-			jpeg.writer.MergeFrom(tempBuffer)
+			se.encodeSymbol(shared.ZRL, table)
+			sw.MergeFrom(tempBuffer)
 			zeroCounter -= 16
+
+			if sw.Err != nil {
+				return errors.New("Error when encode an AC Refine value" + sw.Err.Error())
+			}
+			if se.err != nil {
+				return errors.New("Error when encode an AC Refine symbol" + sw.Err.Error())
+			}
 		}
 
 		if shared.CheckHistory(row[k], app) {
 			if jpeg.eobCounter != 0 {
-				if err := jpeg.encodeEOB(table); err != nil {
-					return errors.New("Can't write an EOB symbol\n" + err.Error())
-				}
-				jpeg.writer.MergeFrom(jpeg.eobBuffer)
+				se.encodeEOB(table)
+				sw.MergeFrom(jpeg.eobBuffer)
 			}
 			rs := (zeroCounter << 4) + 1
-			if err := jpeg.encodeSymbol(rs, table); err != nil {
-				return err
-			}
+			se.encodeSymbol(rs, table)
 
 			bit := true
 			if row[k] < 0 {
 				bit = false
 			}
 
-			if err := jpeg.writer.WriteBit(bit); err != nil {
-				return err
-			}
+			sw.WriteBit(bit)
 
-			jpeg.writer.MergeFrom(tempBuffer)
+			sw.MergeFrom(tempBuffer)
 			zeroCounter = 0
 			afterLast = false
+
+			if sw.Err != nil {
+				return errors.New("Error when encode an AC Refine value" + sw.Err.Error())
+			}
+			if se.err != nil {
+				return errors.New("Error when encode an AC Refine symbol" + sw.Err.Error())
+			}
 		} else {
 			afterLast = true
-			tempBuffer.WriteBit(val&1 == 1)
+			if err := tempBuffer.WriteBit(val&1 == 1); err != nil {
+				return errors.New("Error when encode an AC Refine value" + sw.Err.Error())
+			}
 		}
 	}
 
@@ -591,7 +603,7 @@ func (jpeg *Encoder) encodeRefineDC(block *mcu.CodingBlock) error {
 	//cr
 	sw.WriteBit((block.Cr[0] >> int16(jpeg.curDCApp) & 1) == 1)
 	if sw.Err != nil {
-		return errors.New("Can't write an DC refinement scan" + sw.Err.Error())
+		return errors.New("Error when encode a DC Refine value\n" + sw.Err.Error())
 	}
 
 	return nil

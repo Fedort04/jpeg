@@ -2,6 +2,7 @@ package binreader
 
 import (
 	"bufio"
+	"errors"
 )
 
 // Перечисление типов Endianness
@@ -53,93 +54,134 @@ func (b *BinReader) HuffStreamEnd() {
 }
 
 // Чтение одного байта
-func (b *BinReader) GetByte() byte {
-	ans, _ := b.src.ReadByte()
+func (b *BinReader) GetByte() (byte, error) {
+	var ans byte
+	var err error
+	if ans, err = b.src.ReadByte(); err != nil {
+		return 0, errors.New("Can't read a byte\n" + err.Error())
+	}
 
 	if b.isHuffStream && b.curByte == 0xFF && ans == 0x00 {
-		ans, _ = b.src.ReadByte()
+		if ans, err = b.src.ReadByte(); err != nil {
+			return 0, errors.New("Can't read a byte\n" + err.Error())
+		}
 	}
 
 	b.curByte = ans
-	return ans
+	return ans, nil
 }
 
 // Чтение двух байт
-func (b *BinReader) GetWord() uint16 {
+func (b *BinReader) GetWord() (uint16, error) {
+	var ans uint16
 
-	ans := uint16(b.GetByte())
+	if temp, err := b.GetByte(); err != nil {
+		return 0, errors.New("Can't read a word\n" + err.Error())
+	} else {
+		ans = uint16(temp)
+	}
+
 	if b.end == BIG {
 		ans = ans << 8
-		ans += uint16(b.GetByte())
+		if temp, err := b.GetByte(); err != nil {
+			return 0, errors.New("Can't read a word\n" + err.Error())
+		} else {
+			ans += uint16(temp)
+		}
 	} else {
-		temp := uint16(b.GetByte())
-		temp = temp << 8
-		ans += temp
+		if temp, err := b.GetByte(); err != nil {
+			return 0, errors.New("Can't read a word\n" + err.Error())
+		} else {
+			cur := uint16(temp)
+			cur <<= 8
+			ans += cur
+		}
 	}
-	return ans
+	return ans, nil
 }
 
 // Получение следующего байта без смещения указателя
-func (b *BinReader) GetNextByte() byte {
-	ans, _ := b.src.Peek(1)
-	return ans[0]
+func (b *BinReader) GetNextByte() (byte, error) {
+	if ans, err := b.src.Peek(1); err != nil {
+		return 0, errors.New("Can't check a next byte\n" + err.Error())
+	} else {
+		return ans[0], nil
+	}
 }
 
 // Чтение байта по 4бита
-func (b *BinReader) Get4Bit() (byte, byte) {
-	temp := b.GetByte()
-	return temp >> 4, temp & 0xF
+func (b *BinReader) Get4Bit() (byte, byte, error) {
+	if temp, err := b.GetByte(); err != nil {
+		return 0, 0, errors.New("Can't read a 4-bits pair\n" + err.Error())
+	} else {
+		return temp >> 4, temp & 0xF, nil
+	}
 }
 
 // Чтение одного бита
-func (b *BinReader) GetBit() byte {
+func (b *BinReader) GetBit() (byte, error) {
 	if b.end == BIG {
 		if b.bitCount == 0 {
-			b.GetByte()
+			if _, err := b.GetByte(); err != nil {
+				return 0, errors.New("Can't read a bit\n" + err.Error())
+			}
 			b.bitCount = 8
 		}
 		b.bitCount--
 		temp := b.curByte >> b.bitCount
-		return temp & 1
+		return temp & 1, nil
 	} else {
 		if b.bitCount == 8 {
-			b.GetByte()
+			if _, err := b.GetByte(); err != nil {
+				return 0, errors.New("Can't read a bit\n" + err.Error())
+			}
 			b.bitCount = 0
 		}
 		temp := b.curByte >> b.bitCount
 		b.bitCount++
-		return temp & 1
+		return temp & 1, nil
 	}
 }
 
 // Чтение n бит
-func (b *BinReader) GetBits(n byte) uint16 {
+func (b *BinReader) GetBits(n byte) (uint16, error) {
 	if n == 0 {
-		return 0
+		return 0, nil
 	}
 	var ans uint16
 	for range n {
 		ans = ans << 1
-		ans += uint16(b.GetBit())
+		if temp, err := b.GetBit(); err != nil {
+			return 0, errors.New("Can't read bits array\n" + err.Error())
+		} else {
+			ans += uint16(temp)
+		}
 	}
-	return ans
+	return ans, nil
 }
 
 // Пропуск оставшихся бит в байте
-func (b *BinReader) BitsAlign() {
-	b.GetByte()
+func (b *BinReader) BitsAlign() error {
+	if _, err := b.GetByte(); err != nil {
+		return errors.New("Can't align bits\n" + err.Error())
+	}
 	if b.end == BIG {
 		b.bitCount = 8
 	} else {
 		b.bitCount = 0
 	}
+	return nil
 }
 
 // Чтение n байт
-func (b *BinReader) GetArray(n uint16) []byte {
+func (b *BinReader) GetArray(n uint16) ([]byte, error) {
 	res := make([]byte, n)
 	for i := range n {
-		res[i] = b.GetByte()
+		if temp, err := b.GetByte(); err != nil {
+			return nil, errors.New("Can't read a byte array\n" + err.Error())
+		} else {
+			res[i] = temp
+		}
 	}
-	return res
+	return res, nil
 }

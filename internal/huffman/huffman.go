@@ -161,7 +161,12 @@ func (h *HuffTable) DecodeHuff(reader *binreader.BinReader) (uint16, error) {
 	codeLen := 0
 	for {
 		code = code << 1
-		code += uint16(reader.GetBit())
+		temp, err := reader.GetBit()
+		if err != nil {
+			return 0, errors.New("Huffman bit-reading error: can't find a symbol")
+		}
+
+		code += uint16(temp)
 		codeLen++
 		if codeLen > 16 {
 			return 0, errors.New("Huffman bit-reading error: can't find a symbol")
@@ -200,7 +205,7 @@ func RecoverHuffTable(offset []byte, symbols []byte) (*HuffTable, error) {
 // Возвращает offset и кол-во символов
 func OffsetCreate(bits []byte) ([]byte, byte, error) {
 	if len(bits) != NumHuffCodesLen {
-		return nil, 0, errors.New("Huffman recovery error: invalid bits array")
+		return nil, 0, errors.New("Huffman table recovery error: invalid bits array")
 	}
 
 	offset := make([]byte, NumHuffCodesLen+1)
@@ -225,15 +230,24 @@ func (huff *HuffTable) GetCodeBySym(sym byte) (uint16, byte, error) {
 // Чтение и конструирование таблиц Хаффмана
 // Возвращает tc (класс таблицы), th(id таблицы), уже готовую таблицу
 func ReadHuffTable(reader *binreader.BinReader) (byte, byte, *HuffTable, error) {
-	reader.GetWord()
-	tc, th := reader.Get4Bit()
-	bits := reader.GetArray(NumHuffCodesLen)
+	sr := &binreader.StickyReader{Reader: reader}
+	sr.GetWord()
+	tc, th := sr.Get4Bit()
+	bits := sr.GetArray(NumHuffCodesLen)
+	if sr.Err != nil {
+		return 0, 0, nil, sr.Err
+	}
+
 	offset, sumElem, err := OffsetCreate(bits)
 	if err != nil {
 		return 0, 0, nil, err
 	}
 
-	symbols := reader.GetArray(uint16(sumElem))
+	symbols, err := reader.GetArray(uint16(sumElem))
+	if err != nil {
+		return 0, 0, nil, err
+	}
+
 	huff, err := RecoverHuffTable(offset, symbols)
 	return tc, th, huff, err
 }

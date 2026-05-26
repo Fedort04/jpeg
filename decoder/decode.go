@@ -2,6 +2,7 @@ package decoder
 
 import (
 	"errors"
+	"fmt"
 	binreader "jpeg/internal/binReader"
 	"jpeg/internal/huffman"
 	"jpeg/internal/mcu"
@@ -46,11 +47,15 @@ func (jpeg *Decoder) restart() {
 }
 
 // Декодирование символа EOB
-func decodeEndOfBand(b *binreader.BinReader, count byte) uint16 {
+func decodeEndOfBand(b *binreader.BinReader, count byte) (uint16, error) {
 	var ans uint16
 	ans = 1 << count
-	ans += b.GetBits(count)
-	return ans
+	temp, err := b.GetBits(count)
+	if err != nil {
+		return 0, err
+	}
+	ans += temp
+	return ans, nil
 }
 
 // Декодирование знака в потоке Хаффмана
@@ -65,12 +70,16 @@ func decodeSign(num int16, len byte) int16 {
 // Декодирование DC элемента
 func (jpeg *Decoder) decodeDC(id int, huff *huffman.HuffTable) (int16, error) {
 	temp, err := huff.DecodeHuff(jpeg.reader)
-
 	if err != nil {
-		return 0, err
+		return 0, errors.New("can't find HuffTable DC symbol")
 	}
 
-	diff := decodeSign(int16(jpeg.reader.GetBits(byte(temp))), byte(temp))
+	bits, err := jpeg.reader.GetBits(byte(temp))
+	if err != nil {
+		return 0, errors.New("DC recovery failed")
+	}
+
+	diff := decodeSign(int16(bits), byte(temp))
 	res := diff + prev[id]
 	prev[id] = res
 	return res, nil
@@ -96,7 +105,7 @@ func (jpeg *Decoder) decodeAC(unit []int16, huff *huffman.HuffTable) error {
 		rs, err := huff.DecodeHuff(jpeg.reader)
 
 		if err != nil {
-			return err
+			return errors.New("can't find HuffTable AC symbol")
 		}
 
 		big := byte(rs >> 4)
@@ -108,7 +117,11 @@ func (jpeg *Decoder) decodeAC(unit []int16, huff *huffman.HuffTable) error {
 
 		if small == 0 {
 			if big != 15 {
-				bandSkips = decodeEndOfBand(jpeg.reader, big)
+				bandSkips, err = decodeEndOfBand(jpeg.reader, big)
+				if err != nil {
+					return errors.New("End Of Band recovery failed")
+				}
+
 				bandSkips--
 				return nil
 			} else {
@@ -118,9 +131,13 @@ func (jpeg *Decoder) decodeAC(unit []int16, huff *huffman.HuffTable) error {
 		} else {
 			k += big
 			if k > unitLen {
-				return errors.New("Huffman bit-reading error: AC reading failed")
+				return errors.New("invalid symbol")
 			}
-			bits := jpeg.reader.GetBits(small)
+			bits, err := jpeg.reader.GetBits(small)
+			if err != nil {
+				return errors.New("invalid symbol")
+			}
+
 			unit[k] = decodeSign(int16(bits), small) << int16(jpeg.saLow)
 		}
 	}
@@ -133,11 +150,11 @@ func (jpeg *Decoder) decodeDataUnit(channel int) ([]int16, error) {
 	temp := make([]int16, mcu.UnitRowCount*mcu.UnitColCount)
 	temp[0], err = jpeg.decodeDC(channel, jpeg.dcTables[jpeg.comps[channel].dcTableID])
 	if err != nil {
-		return nil, err
+		return nil, errors.New("DC decode error: " + err.Error() + " in ")
 	}
 
 	if err = jpeg.decodeAC(temp, jpeg.acTables[jpeg.comps[channel].acTableID]); err != nil {
-		return nil, err
+		return nil, errors.New("AC decode error: " + err.Error() + " in ")
 	}
 
 	return temp, nil
@@ -145,11 +162,18 @@ func (jpeg *Decoder) decodeDataUnit(channel int) ([]int16, error) {
 
 // Выполнение рестарта дельта кодирвоания
 func (jpeg *Decoder) makeRestart() bool {
-	marker := jpeg.reader.GetWord()
+	marker, err := jpeg.reader.GetWord()
+	if err != nil {
+		return false
+	}
+
 	if marker == shared.EOI {
 		return true
 	} else if marker >= shared.RST0 && marker <= shared.RST7 {
-		jpeg.reader.BitsAlign()
+		if err := jpeg.reader.BitsAlign(); err != nil {
+			return false
+		}
+
 		jpeg.restart()
 		return true
 	}
@@ -170,15 +194,15 @@ func (jpeg *Decoder) decodeBaselineBlock(x uint16, y uint16) error {
 				switch i {
 				case int(mcu.Y):
 					if jpeg.blocks[x+curV][y+curH].Y, err = jpeg.decodeDataUnit(i); err != nil {
-						return err
+						return fmt.Errorf("%sMCU(%d;%d)", err.Error(), x+curV, y+curH)
 					}
 				case int(mcu.Cb):
 					if jpeg.blocks[x+curV][y+curH].Cb, err = jpeg.decodeDataUnit(i); err != nil {
-						return err
+						return fmt.Errorf("%sMCU(%d;%d)", err.Error(), x+curV, y+curH)
 					}
 				case int(mcu.Cr):
 					if jpeg.blocks[x+curV][y+curH].Cr, err = jpeg.decodeDataUnit(i); err != nil {
-						return err
+						return fmt.Errorf("%sMCU(%d;%d)", err.Error(), x+curV, y+curH)
 					}
 				}
 			}
@@ -216,7 +240,7 @@ func (jpeg *Decoder) decodeBaselineScan(increment uint16) (uint16, error) {
 
 			jpeg.blockCount++
 			if jpeg.restartInterval != 0 && jpeg.blockCount%uint(jpeg.restartInterval) == 0 && !jpeg.makeRestart() {
-				return 0, errors.New("Huffman bit-reading error: make restart error")
+				return 0, fmt.Errorf("RST error in MCU block(%d; %d)", row, col)
 			}
 		}
 	}
@@ -230,26 +254,36 @@ func (jpeg *Decoder) decodeBaselineScan(increment uint16) (uint16, error) {
 
 // Пропуск нулей при refinement
 // Возвращает индекс следующего за промежутком нуля или endIndex
-func (jpeg *Decoder) RefinementZeroSkip(data []int16, zeros byte, startIndex byte, endIndex byte) byte {
+func (jpeg *Decoder) RefinementZeroSkip(data []int16, zeros byte, startIndex byte, endIndex byte) (byte, error) {
 	for k := startIndex; k <= endIndex; k++ {
 		if data[k] == 0 {
 			if zeros == 0 {
-				return k
+				return k, nil
 			} else {
 				zeros--
 			}
 		} else if data[k] > 0 {
-			if jpeg.reader.GetBit() == 1 {
+			bit, err := jpeg.reader.GetBit()
+			if err != nil {
+				return 0, errors.New("refine failed " + err.Error())
+			}
+
+			if bit == 1 {
 				data[k] |= positiveBit
 			}
 		} else {
-			if jpeg.reader.GetBit() == 1 {
+			bit, err := jpeg.reader.GetBit()
+			if err != nil {
+				return 0, errors.New("refine failed " + err.Error())
+			}
+
+			if bit == 1 {
 				data[k] += negativeBit
 			}
 		}
 	}
 
-	return endIndex
+	return endIndex, nil
 }
 
 // Декодирование блока MCU Progressive (используется только для DC)
@@ -267,22 +301,26 @@ func (jpeg *Decoder) decodeProgressiveDC(x uint16, y uint16) error {
 					switch i {
 					case int(mcu.Y):
 						if jpeg.blocks[x+curV][y+curH].Y[0], err = jpeg.decodeDC(i, jpeg.dcTables[comp.dcTableID]); err != nil {
-							return err
+							return errors.New("DC first visit decode error: " + err.Error() + " in ")
 						}
 						jpeg.blocks[x+curV][y+curH].Y[0] <<= int16(jpeg.saLow)
 					case int(mcu.Cb):
 						if jpeg.blocks[x+curV][y+curH].Cb[0], err = jpeg.decodeDC(i, jpeg.dcTables[comp.dcTableID]); err != nil {
-							return err
+							return errors.New("DC first visit decode error: " + err.Error() + " in ")
 						}
 						jpeg.blocks[x+curV][y+curH].Cb[0] <<= int16(jpeg.saLow)
 					case int(mcu.Cr):
 						if jpeg.blocks[x+curV][y+curH].Cr[0], err = jpeg.decodeDC(i, jpeg.dcTables[comp.dcTableID]); err != nil {
-							return err
+							return errors.New("DC first visit decode error: " + err.Error() + " in ")
 						}
 						jpeg.blocks[x+curV][y+curH].Cr[0] <<= int16(jpeg.saLow)
 					}
 				} else { // Повторное чтение DC
-					bit := jpeg.reader.GetBit()
+					bit, err := jpeg.reader.GetBit()
+					if err != nil {
+						return errors.New("DC refune decode error: " + err.Error() + " in ")
+					}
+
 					switch i {
 					case int(mcu.Y):
 						jpeg.blocks[x+curV][y+curH].Y[0] |= int16(bit << jpeg.saLow)
@@ -313,15 +351,15 @@ func (jpeg *Decoder) decodeProgressiveAC() error {
 					switch i {
 					case int(mcu.Y):
 						if err := jpeg.decodeAC(jpeg.blocks[row][col].Y, jpeg.acTables[comp.acTableID]); err != nil {
-							return err
+							return fmt.Errorf("AC decode error: %s in MCU block(%d; %d)", err.Error(), row, col)
 						}
 					case int(mcu.Cb):
 						if err := jpeg.decodeAC(jpeg.blocks[row][col].Cb, jpeg.acTables[comp.acTableID]); err != nil {
-							return err
+							return fmt.Errorf("AC decode error: %s in MCU block(%d; %d)", err.Error(), row, col)
 						}
 					case int(mcu.Cr):
 						if err := jpeg.decodeAC(jpeg.blocks[row][col].Cr, jpeg.acTables[comp.acTableID]); err != nil {
-							return err
+							return fmt.Errorf("AC decode error: %s in MCU block(%d; %d)", err.Error(), row, col)
 						}
 					}
 				} else { // Повторное чтение AC
@@ -336,7 +374,9 @@ func (jpeg *Decoder) decodeProgressiveAC() error {
 					}
 
 					if bandSkips > 0 {
-						jpeg.RefinementZeroSkip(arr, mcu.UnitRowCount*mcu.UnitColCount, jpeg.startSpectral, jpeg.endSpectral)
+						if _, err := jpeg.RefinementZeroSkip(arr, mcu.UnitRowCount*mcu.UnitColCount, jpeg.startSpectral, jpeg.endSpectral); err != nil {
+							return fmt.Errorf("AC decode error: %s in MCU block(%d, %d)", err.Error(), row, col)
+						}
 						bandSkips--
 						continue
 					}
@@ -345,7 +385,7 @@ func (jpeg *Decoder) decodeProgressiveAC() error {
 
 						sym, err := jpeg.acTables[comp.acTableID].DecodeHuff(jpeg.reader)
 						if err != nil {
-							return err
+							return fmt.Errorf("AC decode error: can't find HuffTable AC symbol in MCU block(%d; %d)", row, col)
 						}
 
 						high := byte(sym >> 4)
@@ -355,19 +395,37 @@ func (jpeg *Decoder) decodeProgressiveAC() error {
 						switch low {
 						case 0:
 							if high != 15 {
-								bandSkips = decodeEndOfBand(jpeg.reader, high)
-								k = jpeg.RefinementZeroSkip(arr, mcu.UnitRowCount*mcu.UnitColCount, k, jpeg.endSpectral)
+								bandSkips, err = decodeEndOfBand(jpeg.reader, high)
+								if err != nil {
+									return fmt.Errorf("AC decode error: End Of Band recovery failed in MCU block(%d; %d)", row, col)
+								}
+
+								k, err = jpeg.RefinementZeroSkip(arr, mcu.UnitRowCount*mcu.UnitColCount, k, jpeg.endSpectral)
+								if err != nil {
+									return fmt.Errorf("AC decode error: %s in MCU block(%d, %d)", err.Error(), row, col)
+								}
 								bandSkips--
 							} else {
-								k = jpeg.RefinementZeroSkip(arr, high, k, jpeg.endSpectral)
+								k, err = jpeg.RefinementZeroSkip(arr, high, k, jpeg.endSpectral)
+								if err != nil {
+									return fmt.Errorf("AC decode error: %s in MCU block(%d, %d)", err.Error(), row, col)
+								}
 							}
 						case 1:
-							if jpeg.reader.GetBit() == 1 {
+							bit, err := jpeg.reader.GetBit()
+							if err != nil {
+								return fmt.Errorf("AC decode error: refine failed %s in MCU block(%d; %d)", err.Error(), row, col)
+							}
+
+							if bit == 1 {
 								coeff = positiveBit
 							} else {
 								coeff = negativeBit
 							}
-							k = jpeg.RefinementZeroSkip(arr, high, k, jpeg.endSpectral)
+							k, err = jpeg.RefinementZeroSkip(arr, high, k, jpeg.endSpectral)
+							if err != nil {
+								return fmt.Errorf("AC decode error: %s in MCU block(%d, %d)", err.Error(), row, col)
+							}
 							arr[k] = coeff
 						}
 					}
@@ -392,12 +450,12 @@ func (jpeg *Decoder) decodeProgressiveScan() error {
 		for row = range jpeg.numBlocksHeight {
 			for col = range jpeg.numBlocksWidth {
 				if err := jpeg.decodeProgressiveDC(row*uint16(jpeg.maxV), col*uint16(jpeg.maxH)); err != nil {
-					return err
+					return fmt.Errorf("%sMCU block(%d; %d)", err.Error(), row, col)
 				}
 
 				blockCount++
 				if jpeg.restartInterval != 0 && blockCount%uint(jpeg.restartInterval) == 0 && !jpeg.makeRestart() {
-					return errors.New("Huffman bit-reading error: make restart error")
+					return fmt.Errorf("RST error in MCU block(%d; %d)", row, col)
 				}
 			}
 		}

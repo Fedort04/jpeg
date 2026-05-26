@@ -148,3 +148,10 @@ func (se *stickyEncoder) writeEndImg() {
 	}
 	se.err = se.encoder.writeEndImg()
 }
+
+func (se *stickyEncoder) encodeEOB(table *huffman.HuffTable) {
+	if se.err != nil {
+		return
+	}
+	se.err = se.encoder.encodeEOB(table)
+}

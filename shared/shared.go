@@ -216,31 +216,6 @@ func CompareSlices[T Number](a, b []T) bool {
 	return true
 }
 
-// @todo полезный, но не подходит((
-// Копирует данные части src в dst
-// hPos; vPos характеризуют верхний левый угол части, а height; width размер части
-// func CopyPartToMatrix[T any, M constraints.Integer](dst *[][]T, src [][]T, hPos M, vPos M, height M, width M) error {
-// 	if src == nil {
-// 		*dst = nil
-// 		return errors.New("src is nil")
-// 	}
-
-// 	newMatrix := make([][]T, height)
-
-// 	for i := range height {
-// 		if src[hPos+i] != nil {
-// 			newMatrix[i] = make([]T, width)
-
-// 			for j := range width {
-// 				newMatrix[i][j] = src[hPos+i][vPos+j]
-// 			}
-// 		} else {
-// 			return errors.New("Index height range out of src array")
-// 		}
-// 	}
-// 	return nil
-// }
-
 // Маркеры всех используемых заголовков
 const (
 	SOI   uint16 = 0xFFD8
@@ -264,3 +239,7 @@ const NumOfTables = 4     //Максимальное количество таб
 const NumOfChannels = 3   //Максимальное количество цветовых компонент
 const MaxComps = 3        //Максимальное количество компонент
 const SizeOfTable = 64    //Количество элементов в одной таблице квантования
+const BaselineSS = 0
+const BaselineSE = 63
+const BaselineAh = 0
+const BaselineAl = 0

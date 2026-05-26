@@ -342,8 +342,8 @@ func encodeImageSteps(filepath string, img shared.Image, isProgressive bool, ste
 	jpgEncoder, err := encoder.CreateEncoder(writer, img, quantY, quantColor)
 	jpgEncoder.Subsampling = encoder.Both
 	// jpgEncoder.DCApprox = encoder.TwoBits
-	jpgEncoder.Yapprox = encoder.OneBit
-	jpgEncoder.Capprox = encoder.OneBit
+	// jpgEncoder.Yapprox = encoder.OneBit
+	// jpgEncoder.Capprox = encoder.OneBit
 	if err != nil {
 		log.Fatal(err.Error())
 		return

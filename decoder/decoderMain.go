@@ -57,47 +57,64 @@ type Decoder struct {
 	img                shared.Image                           //Результирующее изображение
 }
 
-// Чтение маркера marker
-func (jpeg *Decoder) readMarker(marker uint16) bool {
-	if temp := jpeg.reader.GetWord(); temp != marker {
-		return false
-	}
-	return true
-}
+const readErrorMsg = "Can't read segment "
+const minPrecision = 8
+const maxPrecision = 16
+const maxSubsample = 2 //По JFIF
 
 // Чтение сегмента приложения
-func (jpeg *Decoder) readApp() {
-	ln := jpeg.reader.GetWord()
-	jpeg.reader.GetArray(ln - 2)
+func (jpeg *Decoder) readApp() error {
+	ln, err := jpeg.reader.GetWord()
+	if err != nil {
+		return errors.New(readErrorMsg + "APP\n" + err.Error())
+	}
+	if _, err = jpeg.reader.GetArray(ln - 2); err != nil {
+		return errors.New(readErrorMsg + "APP\n" + err.Error())
+	}
+	return nil
 }
 
 // Чтение таблицы квантования
 func (jpeg *Decoder) readQuantTable() error {
-	jpeg.reader.GetWord()
-	//До тех пор, пока следующий байт не будет маркером
-	tq := jpeg.reader.GetByte()
-
-	if tq > shared.NumOfTables-1 {
-		return errors.New("Segment reading error: Quant table invalid table destination")
+	sr := &binreader.StickyReader{Reader: jpeg.reader}
+	sr.GetWord()
+	tq := sr.GetByte()
+	if sr.Err != nil {
+		return errors.New(readErrorMsg + "DQT\n" + sr.Err.Error())
 	}
 
-	table := jpeg.reader.GetArray(shared.SizeOfTable)
+	if tq > shared.NumOfTables-1 {
+		return errors.New("DQT segment decode error: invalid table id " + strconv.Itoa(int(tq)))
+	}
+
+	table, err := jpeg.reader.GetArray(shared.SizeOfTable)
+	if err != nil {
+		return errors.New(readErrorMsg + "DQT\n" + err.Error())
+	}
 	jpeg.quantTables[tq] = table
 	return nil
 }
 
 // Чтение сегмента с перезапуском дельта-кодирования
-func (jpeg *Decoder) readRestartInterval() {
-	jpeg.reader.GetWord()
-	jpeg.restartInterval = jpeg.reader.GetWord()
+func (jpeg *Decoder) readRestartInterval() error {
+	sr := &binreader.StickyReader{Reader: jpeg.reader}
+	sr.GetWord()
+	jpeg.restartInterval = sr.GetWord()
+	if sr.Err != nil {
+		return errors.New(readErrorMsg + "DRI\n" + sr.Err.Error())
+	}
+
+	return nil
 }
 
 // Чтение сегмента таблиц, возвращает следующие за сегментами 2 байта
 func (jpeg *Decoder) readTables() (uint16, error) {
-	marker := jpeg.reader.GetWord()
+	marker, _ := jpeg.reader.GetWord()
 	isContinue := false
 	if marker >= shared.APP0 && marker <= shared.APP15 {
-		jpeg.readApp()
+		if err := jpeg.readApp(); err != nil {
+			return 0, err
+		}
 		isContinue = true
 	} else if marker == shared.DQT {
 		if err := jpeg.readQuantTable(); err != nil {
@@ -105,12 +122,13 @@ func (jpeg *Decoder) readTables() (uint16, error) {
 		}
 		isContinue = true
 	} else if marker == shared.DHT {
+		const prefix = "DHT segment decode error: "
 		tc, th, huff, err := huffman.ReadHuffTable(jpeg.reader)
 		if err != nil {
-			return 0, err
+			return 0, errors.New(prefix + "Huffman table recovery failed\n" + err.Error())
 		}
 		if th > shared.NumOfTables-1 {
-			return 0, errors.New("Segment reading error: Huffman table invalid table destination")
+			return 0, errors.New(prefix + "invalid table id " + strconv.Itoa(int(th)))
 		}
 		switch tc {
 		case 0:
@@ -118,7 +136,7 @@ func (jpeg *Decoder) readTables() (uint16, error) {
 		case 1:
 			jpeg.acTables[th] = huff
 		default:
-			return 0, errors.New("Segment reading error: Huffman table invalid table ID")
+			return 0, errors.New(prefix + "invalid table class " + strconv.Itoa(int(tc)))
 		}
 
 		isContinue = true
@@ -126,6 +144,7 @@ func (jpeg *Decoder) readTables() (uint16, error) {
 		jpeg.readRestartInterval()
 		isContinue = true
 	}
+
 	if isContinue {
 		var err error
 		marker, err = jpeg.readTables()
@@ -145,65 +164,112 @@ func (jpeg *Decoder) updateFlags() {
 
 // Чтение заголовка кадра
 func (jpeg *Decoder) readScanHeader() error {
-	jpeg.reader.GetWord()
-	ns := jpeg.reader.GetByte()
+	const prefix = "SOS segment decode error: invalid "
+	sr := binreader.StickyReader{Reader: jpeg.reader}
+	sr.GetWord()
+	ns := sr.GetByte()
+	if sr.Err != nil {
+		return errors.New(readErrorMsg + "SOS\n" + sr.Err.Error())
+	}
+	if ns > shared.NumOfChannels {
+		return fmt.Errorf("%sheader param Num_Of_Channels %d", prefix, ns)
+	}
 
 	jpeg.updateFlags()
-
 	//Для каждой компоненты
 	for range ns {
-		cs := jpeg.reader.GetByte()
-		if cs > shared.NumOfChannels {
-			return errors.New("Segment reading error: too much color channels")
+		cs := sr.GetByte()
+		td, ta := sr.Get4Bit()
+		if sr.Err != nil {
+			return errors.New(readErrorMsg + "SOS\n" + sr.Err.Error())
 		}
 
-		td, ta := jpeg.reader.Get4Bit()
+		if cs > shared.NumOfChannels {
+			return fmt.Errorf("%scomponent param Channel_selector %d", prefix, cs)
+		}
 
-		if td > shared.NumOfTables || ta > shared.NumOfTables {
-			return errors.New("Segment reading error: invalid huff-table channel ID")
+		if td > shared.NumOfTables {
+			return fmt.Errorf("%scomponent param DC_Hufftable_ID %d", prefix, td)
+		}
+		if ta > shared.NumOfTables {
+			return fmt.Errorf("%scomponent param AC_Hufftable_ID %d", prefix, ta)
 		}
 
 		jpeg.comps[cs-1].dcTableID = td
 		jpeg.comps[cs-1].acTableID = ta
 		jpeg.comps[cs-1].used = true
 	}
-	jpeg.startSpectral = jpeg.reader.GetByte()
-	jpeg.endSpectral = jpeg.reader.GetByte()
-	if jpeg.startSpectral > jpeg.endSpectral || jpeg.endSpectral > 63 {
-		return fmt.Errorf("Segment reading error: spectralSelection params error: start: %d\tend: %d", jpeg.startSpectral, jpeg.endSpectral)
+
+	jpeg.startSpectral = sr.GetByte()
+	jpeg.endSpectral = sr.GetByte()
+	jpeg.saHigh, jpeg.saLow = sr.Get4Bit()
+	if sr.Err != nil {
+		return errors.New(readErrorMsg + "SOS\n" + sr.Err.Error())
 	}
-	jpeg.saHigh, jpeg.saLow = jpeg.reader.Get4Bit()
+
+	if jpeg.IsProgressive {
+		if (jpeg.startSpectral == 0 && jpeg.endSpectral != 0) || (jpeg.startSpectral > jpeg.endSpectral) {
+			return fmt.Errorf("%sheader param SS %d, SE %d ", prefix, jpeg.startSpectral, jpeg.endSpectral)
+		}
+	} else { //Baseline
+		if jpeg.startSpectral != shared.BaselineSS || jpeg.endSpectral != shared.BaselineSE {
+			return fmt.Errorf("%sheader param SS %d, SE %d ", prefix, jpeg.startSpectral, jpeg.endSpectral)
+		}
+		if jpeg.saHigh != shared.BaselineAh || jpeg.saLow != shared.BaselineAl {
+			return fmt.Errorf("%sheader param AH %d, AL %d ", prefix, jpeg.saHigh, jpeg.saLow)
+		}
+	}
+
 	return nil
 }
 
 // Чтение заголовка фрейма
 func (jpeg *Decoder) readFrameHeader() error {
-	jpeg.reader.GetWord()
-	jpeg.samplePrecision = jpeg.reader.GetByte()
-
-	if jpeg.samplePrecision != 8 && jpeg.samplePrecision != 16 {
-		return errors.New("Segment reading error: invalid segment precision")
+	const prefix = "SOF segment decode error: invalid "
+	sr := &binreader.StickyReader{Reader: jpeg.reader}
+	sr.GetWord()
+	jpeg.samplePrecision = sr.GetByte()
+	if sr.Err != nil {
+		return errors.New(readErrorMsg + "SOF\n" + sr.Err.Error())
 	}
 
-	jpeg.ImageHeight = jpeg.reader.GetWord()
-	jpeg.ImageWidth = jpeg.reader.GetWord()
-	jpeg.numOfComps = jpeg.reader.GetByte()
+	if jpeg.samplePrecision != minPrecision && jpeg.samplePrecision != maxPrecision {
+		return errors.New(prefix + "precision " + strconv.Itoa(int(jpeg.samplePrecision)))
+	}
+
+	jpeg.ImageHeight = sr.GetWord()
+	jpeg.ImageWidth = sr.GetWord()
+	jpeg.numOfComps = sr.GetByte()
+	if sr.Err != nil {
+		return errors.New(readErrorMsg + "SOF\n" + sr.Err.Error())
+	}
 
 	if jpeg.numOfComps > shared.NumOfChannels {
-		return errors.New("Segment reading error: too much color channels")
+		return errors.New(prefix + "num of channels " + strconv.Itoa(int(jpeg.numOfComps)))
 	}
 
-	//Для каждой компоненты
 	for range jpeg.numOfComps {
-		c := jpeg.reader.GetByte()
-		h, v := jpeg.reader.Get4Bit()
+		c := sr.GetByte()
+		h, v := sr.Get4Bit()
+		tq := sr.GetByte()
+		if sr.Err != nil {
+			return errors.New(readErrorMsg + "SOF\n" + sr.Err.Error())
+		}
+
+		if h > maxSubsample || v > maxSubsample {
+			return errors.New(prefix + "component param Subsample_factor")
+		}
+		if tq > shared.NumOfTables {
+			return errors.New(prefix + "component param Quant_table_id")
+		}
+
 		if h > jpeg.maxH {
 			jpeg.maxH = h
 		}
 		if v > jpeg.maxV {
 			jpeg.maxV = v
 		}
-		tq := jpeg.reader.GetByte()
+
 		jpeg.comps[c-1] = component{h: h, v: v, quantTableID: tq}
 	}
 	return nil
@@ -226,7 +292,7 @@ func (jpeg *Decoder) readScans(iterCount uint16) error {
 				jpeg.wasEOI = true
 				break
 			} else if nextMarker != shared.SOS {
-				return errors.New("Scan reading error")
+				return errors.New(readErrorMsg + "marker")
 			}
 			if err = jpeg.readScanHeader(); err != nil {
 				return err
@@ -235,8 +301,15 @@ func (jpeg *Decoder) readScans(iterCount uint16) error {
 				return err
 			}
 
-			if jpeg.reader.GetNextByte() != 0xFF {
-				jpeg.reader.BitsAlign()
+			nextByte, err := jpeg.reader.GetNextByte()
+			if err != nil {
+				return errors.New(readErrorMsg + "Scan data\n" + err.Error())
+			}
+
+			if nextByte != 0xFF {
+				if err := jpeg.reader.BitsAlign(); err != nil {
+					return errors.New(readErrorMsg + "Scan data\n" + err.Error())
+				}
 			}
 			jpeg.CurStatus++
 		}
@@ -247,7 +320,7 @@ func (jpeg *Decoder) readScans(iterCount uint16) error {
 				return err
 			}
 			if nextMarker != shared.SOS {
-				return errors.New("Scan reading error")
+				return errors.New(readErrorMsg + "marker")
 			}
 			if err = jpeg.readScanHeader(); err != nil {
 				return err
@@ -275,7 +348,7 @@ func (jpeg *Decoder) readFileHeader() error {
 	case shared.SOF2:
 		jpeg.IsProgressive = true
 	default:
-		return fmt.Errorf("Decoder works only with Baseline and Progressive DCT-based JPEG: can't read one of this markers (0x%x; 0x%x)\n", shared.SOF0, shared.SOF2)
+		return fmt.Errorf("SOF segment decode error: invalid marker (not %d or %d)\n", shared.SOF0, shared.SOF2)
 	}
 	if err = jpeg.readFrameHeader(); err != nil {
 		return err
@@ -324,8 +397,12 @@ func ReadJPEG(source *bufio.Reader) (*Decoder, error) {
 	var res Decoder
 	res.reader = binreader.BinReaderInit(source)
 
-	if !res.readMarker(shared.SOI) {
-		return nil, errors.New("Image is not JPEG: can't read SOI marker")
+	marker, err := res.reader.GetWord()
+	if err != nil {
+		return nil, errors.New("Can't read a word in segment SOI\n" + err.Error())
+	}
+	if marker != shared.SOI {
+		return nil, errors.New("Can't read SOI marker")
 	}
 
 	if err := res.readFileHeader(); err != nil {

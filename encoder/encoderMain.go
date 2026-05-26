@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"fmt"
 	binwriter "jpeg/internal/binWriter"
 	"jpeg/internal/huffman"
 	"jpeg/internal/mcu"
@@ -69,7 +70,7 @@ type Encoder struct {
 	cDCHuff         *huffman.HuffTable   //Таблица Хаффманна DC цвета
 	cACHuff         *huffman.HuffTable   //Таблица Хаффманна AC цвета
 	prev            []int16              //Предыдущие значения для дельта кодирования
-	mcuCounter      byte                 //Счетчик для restartInterval
+	mcuBlockCounter byte                 //Счетчик для restartInterval
 	restartCounter  byte                 //Счетчик кол-ва рестартов в потоке
 	eobCounter      int                  //Счетчик EOB
 	eobBuffer       *binwriter.BinWriter //Буфер для записи refinement EOB
@@ -104,14 +105,14 @@ func CreateEncoder(dst *bufio.Writer, data shared.Image, quantTableY [][]byte, q
 // Запись маркера начала изображения
 func (jpeg *Encoder) writeStartImg() error {
 	if err := jpeg.writer.WriteWord(shared.SOI); err != nil {
-		return errors.New("Can't write an SOI marker\n" + err.Error())
+		return errors.New("Can't write a segment SOI\n" + err.Error())
 	}
 	return nil
 }
 
 func (jpeg *Encoder) writeEndImg() error {
 	if err := jpeg.writer.WriteWord(shared.EOI); err != nil {
-		return errors.New("Can't write an EOI marker\n" + err.Error())
+		return errors.New("Can't write a segment EOI\n" + err.Error())
 	}
 	return nil
 }
@@ -130,7 +131,7 @@ func (jpeg *Encoder) writeApp() error {
 	sw.WriteByte(yThumb)
 
 	if sw.Err != nil {
-		return errors.New("Can't write an APP0 segment\n" + sw.Err.Error())
+		return errors.New("Can't write a segment APP0\n" + sw.Err.Error())
 	}
 	return nil
 }
@@ -144,7 +145,7 @@ func (jpeg *Encoder) writeQuantTable(quantTable []byte, compId byte) error {
 	sw.WriteArray(quantTable)
 
 	if sw.Err != nil {
-		return errors.New("Can't write an DQT segment\n" + sw.Err.Error())
+		return errors.New("Can't write a segment DQT\n" + sw.Err.Error())
 	}
 	return nil
 }
@@ -174,7 +175,7 @@ func (jpeg *Encoder) writeFrameHeader(isProgressive bool) error {
 	}
 
 	if sw.Err != nil {
-		return errors.New("Can't write an SOF segment\n" + sw.Err.Error())
+		return errors.New("Can't write a segment SOF\n" + sw.Err.Error())
 	}
 	return nil
 }
@@ -183,12 +184,12 @@ func (jpeg *Encoder) writeFrameHeader(isProgressive bool) error {
 func (jpeg *Encoder) writeHuffTable(class byte, id byte, bits []byte, symbols []byte) (*huffman.HuffTable, error) {
 	offset, _, err := huffman.OffsetCreate(bits)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("Can't write a segment DHT\n" + err.Error())
 	}
 
 	huff, err := huffman.RecoverHuffTable(offset, symbols)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("Can't write a segment DHT\n" + err.Error())
 	}
 
 	sw := &binwriter.StickyWriter{Writer: jpeg.writer}
@@ -199,7 +200,7 @@ func (jpeg *Encoder) writeHuffTable(class byte, id byte, bits []byte, symbols []
 	sw.WriteArray(bits)
 	sw.WriteArray(symbols)
 	if sw.Err != nil {
-		return nil, errors.New("Can't write an DHT segment\n" + sw.Err.Error())
+		return nil, errors.New("Can't write a segment DHT\n" + sw.Err.Error())
 	}
 
 	return huff, nil
@@ -215,7 +216,7 @@ func (jpeg *Encoder) writeDri() error {
 	sw.WriteWord(driLength)
 	sw.WriteWord(uint16(jpeg.RestartInterval))
 	if sw.Err != nil {
-		return errors.New("Can't write an DRI segment\n" + sw.Err.Error())
+		return errors.New("Can't write a segment DRI\n" + sw.Err.Error())
 	}
 
 	return nil
@@ -239,7 +240,7 @@ func (jpeg *Encoder) writeSos(config *scanHeader) error {
 	sw.WriteWord(config.length)
 	sw.WriteByte(byte(len(config.comps)))
 	if sw.Err != nil {
-		return errors.New("Can't write an SOS segment\n" + sw.Err.Error())
+		return errors.New("Can't write a segment SOS\n" + sw.Err.Error())
 	}
 
 	for _, elm := range config.comps {
@@ -252,7 +253,7 @@ func (jpeg *Encoder) writeSos(config *scanHeader) error {
 	sw.WriteByte(config.se)
 	sw.Write4Bit(config.ah, config.al)
 	if sw.Err != nil {
-		return errors.New("Can't write an SOS segment\n" + sw.Err.Error())
+		return errors.New("Can't write a segment SOS\n" + sw.Err.Error())
 	}
 
 	return nil
@@ -265,9 +266,9 @@ func (jpeg *Encoder) writeBaselineScanHeader(blocks [][]mcu.CodingBlock) error {
 	//Записать таблицы Хаффмана
 	jpeg.yDCHuff = se.writeHuffTable(0, 0, yDCBits[:], yDCSymbols[:])
 	jpeg.cDCHuff = se.writeHuffTable(0, 1, cDCBits[:], cDCSymbols[:])
-	bits, huffval := huffman.MakeHuffTable(jpeg.histFound(blocks, 0, baselineSS+1, baselineSE, 0, false))
+	bits, huffval := huffman.MakeHuffTable(jpeg.histFound(blocks, 0, shared.BaselineSS+1, shared.BaselineSE, 0, false))
 	jpeg.yACHuff = se.writeHuffTable(1, 0, bits, huffval)
-	bits, huffval = huffman.MakeHuffTable(jpeg.histFound(blocks, 1, baselineSS+1, baselineSE, 0, false))
+	bits, huffval = huffman.MakeHuffTable(jpeg.histFound(blocks, 1, shared.BaselineSS+1, shared.BaselineSE, 0, false))
 	jpeg.cACHuff = se.writeHuffTable(1, 1, bits, huffval)
 	//Записать DRI
 	se.writeDri()
@@ -284,10 +285,10 @@ func (jpeg *Encoder) writeBaselineScanHeader(blocks [][]mcu.CodingBlock) error {
 	header := scanHeader{
 		marker: shared.SOS,
 		length: baselineSOSLength,
-		ss:     baselineSS,
-		se:     baselineSE,
-		ah:     baselineAh,
-		al:     baselineAl,
+		ss:     shared.BaselineSS,
+		se:     shared.BaselineSE,
+		ah:     shared.BaselineAh,
+		al:     shared.BaselineAl,
 	}
 	header.setComps(compArray)
 	//Записать сам заголовок
@@ -296,6 +297,28 @@ func (jpeg *Encoder) writeBaselineScanHeader(blocks [][]mcu.CodingBlock) error {
 	}
 
 	return nil
+}
+
+// Создает строку с описанием текущего прогрессивного скана
+func (jpeg *Encoder) createProgressiveScanDescript(head *scanHeader) string {
+	var refine string //refine or first visit
+	if head.ah == 0 {
+		refine = "first visit"
+	} else {
+		refine = fmt.Sprintf("refine (ah: %d)", head.ah)
+	}
+
+	if len(head.comps) == shared.NumOfChannels { //DC
+		return fmt.Sprintf("DC %s scan", refine)
+	} else { //AC
+		var str = map[mcu.Channel]string{
+			mcu.Y:  "Y",
+			mcu.Cb: "Cb",
+			mcu.Cr: "Cr",
+		}
+		specSelect := fmt.Sprintf("%s [%d, %d]", str[mcu.Channel(head.comps[0].selector-1)], head.ss, head.se) //Channel [spectral selection]
+		return fmt.Sprintf("AC %s %s scan", refine, specSelect)
+	}
 }
 
 // Запись заголовка скана (предварительно записываются таблицы Хаффмана и DRI)
@@ -314,7 +337,7 @@ func (jpeg *Encoder) writeProgressiveScan(blocks [][]mcu.CodingBlock, head *scan
 		se.writeSos(head)
 
 		if se.err != nil {
-			return false, se.err
+			return false, fmt.Errorf("Can't write header in %s\n%s", jpeg.createProgressiveScanDescript(head), se.err.Error())
 		}
 
 		if err := shared.MatrixMapError(blocks, func(elm *mcu.CodingBlock) error {
@@ -324,7 +347,7 @@ func (jpeg *Encoder) writeProgressiveScan(blocks [][]mcu.CodingBlock, head *scan
 			return nil
 			//Конец лямбды
 		}); err != nil {
-			return false, err
+			return false, fmt.Errorf("Can't write scan data in %s\n%s", jpeg.createProgressiveScanDescript(head), err.Error())
 		}
 
 	} else { //AC скан
@@ -333,12 +356,12 @@ func (jpeg *Encoder) writeProgressiveScan(blocks [][]mcu.CodingBlock, head *scan
 		huff := se.writeHuffTable(1, head.comps[0].acTable, bits, huffval)
 		se.writeSos(head)
 		if se.err != nil {
-			return false, se.err
+			return false, fmt.Errorf("Can't write header in %s\n%s", jpeg.createProgressiveScanDescript(head), se.err.Error())
 		}
 
 		jpeg.eobCounter = 0
 		if err := jpeg.encodeProgressiveAC(blocks, head.comps[0].selector-1, huff, head.ss, head.se); err != nil {
-			return false, err
+			return false, fmt.Errorf("Can't write scan data in %s\n%s", jpeg.createProgressiveScanDescript(head), err.Error())
 		}
 	}
 	allDone := jpeg.curStatusScanIncrement()
@@ -357,7 +380,7 @@ func (jpeg *Encoder) writeRefinementScan(blocks [][]mcu.CodingBlock, head *scanH
 
 	if len(head.comps) == shared.NumOfChannels { //DC скан
 		if err := jpeg.writeSos(head); err != nil {
-			return false, err
+			return false, fmt.Errorf("Can't write header in %s\n%s", jpeg.createProgressiveScanDescript(head), se.err.Error())
 		}
 		if err := shared.MatrixMapError(blocks, func(elm *mcu.CodingBlock) error {
 			if err := jpeg.encodeRefineDC(elm); err != nil {
@@ -366,7 +389,7 @@ func (jpeg *Encoder) writeRefinementScan(blocks [][]mcu.CodingBlock, head *scanH
 			return nil
 			//Конец лямбды
 		}); err != nil {
-			return false, err
+			return false, fmt.Errorf("Can't write scan data in %s\n%s", jpeg.createProgressiveScanDescript(head), err.Error())
 		}
 
 	} else { //AC скан
@@ -375,14 +398,14 @@ func (jpeg *Encoder) writeRefinementScan(blocks [][]mcu.CodingBlock, head *scanH
 		huff := se.writeHuffTable(1, head.comps[0].acTable, bits, huffval)
 		se.writeSos(head)
 		if se.err != nil {
-			return false, se.err
+			return false, fmt.Errorf("Can't write header in %s\n%s", jpeg.createProgressiveScanDescript(head), se.err.Error())
 		}
 
 		//Кодим скан
 		jpeg.eobCounter = 0
 		jpeg.eobBuffer = binwriter.LocalBinWriterInit(&bytes.Buffer{})
 		if err := jpeg.encodeRefinementAC(blocks, head.comps[0].selector-1, huff); err != nil {
-			return false, err
+			return false, fmt.Errorf("Can't write scan data in %s\n%s", jpeg.createProgressiveScanDescript(head), err.Error())
 		}
 	}
 	allDone := jpeg.curStatusScanIncrement()
@@ -606,6 +629,10 @@ func (jpeg *Encoder) curStatusScanIncrement() bool {
 
 // По вызову функции выполняется Baseline кодирование
 func (jpeg *Encoder) StartBaseline(numOfRows uint16) (bool, error) {
+	if jpeg.RestartInterval > 10 {
+		return false, fmt.Errorf("Invalid RestartInterval: %d", jpeg.RestartInterval)
+	}
+
 	jpeg.Capprox = ZeroBit
 	jpeg.DCApprox = ZeroBit
 	jpeg.Yapprox = ZeroBit
@@ -652,8 +679,44 @@ func (jpeg *Encoder) StartBaseline(numOfRows uint16) (bool, error) {
 	return true, nil
 }
 
+// Проверка слайса спектральной подборки
+func checkSpectralRange(slice []byte) bool {
+	if len(slice) == 0 {
+		return false
+	}
+
+	prev := slice[0]
+	if prev > shared.SizeOfTable-1 {
+		return false
+	}
+
+	for i := 1; i < len(slice); i++ {
+		curr := slice[i]
+
+		if curr > shared.SizeOfTable-1 {
+			return false
+		}
+
+		if curr <= prev {
+			return false
+		}
+
+		prev = curr
+	}
+
+	return true
+}
+
 // По вызову функции выполняется Progressive кодирование
 func (jpeg *Encoder) StartProgressive(numOfScans byte) (bool, error) {
+	if !checkSpectralRange(jpeg.Cspectral) {
+		return false, fmt.Errorf("Invalid Cspectral: %v", jpeg.Cspectral)
+	}
+
+	if !checkSpectralRange(jpeg.Yspectral) {
+		return false, fmt.Errorf("Invalid Yspectral: %v", jpeg.Yspectral)
+	}
+
 	jpeg.numOfScansCalc()
 	jpeg.forSkip = 0
 	jpeg.curDCApp = byte(jpeg.DCApprox)

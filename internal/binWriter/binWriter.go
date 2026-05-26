@@ -67,7 +67,7 @@ func (b *BinWriter) MergeFrom(src *BinWriter) error {
 func (b *BinWriter) FlushBits() error {
 	if b.bits > 0 {
 		if err := b.w.WriteByte(b.buf); err != nil {
-			return err
+			return errors.New("Can't flush bits\n" + err.Error())
 		}
 		b.buf = 0
 		b.bits = 0
@@ -80,7 +80,10 @@ func (b *BinWriter) WriteByte(c byte) error {
 	if err := b.FlushBits(); err != nil {
 		return err
 	}
-	return b.w.WriteByte(c)
+	if err := b.w.WriteByte(c); err != nil {
+		return errors.New("Can't write a byte\n" + err.Error())
+	}
+	return nil
 }
 
 // Записывает два байта
@@ -90,9 +93,12 @@ func (b *BinWriter) WriteWord(val uint16) error {
 	}
 	// Big-Endian
 	if err := b.w.WriteByte(byte(val >> 8)); err != nil {
-		return err
+		return errors.New("Can't write a word\n" + err.Error())
 	}
-	return b.w.WriteByte(byte(val))
+	if err := b.w.WriteByte(byte(val)); err != nil {
+		return errors.New("Can't write a word\n" + err.Error())
+	}
+	return nil
 }
 
 // Записывает один бит в буфер. Когда буфер готов, то байт записывается в файл
@@ -103,11 +109,11 @@ func (b *BinWriter) WriteBit(bit bool) error {
 	b.bits++
 	if b.bits == 8 {
 		if err := b.w.WriteByte(b.buf); err != nil {
-			return err
+			return errors.New("Can't write a bit\n" + err.Error())
 		}
 		if b.buf == 0xFF && b.buffer == nil { //После xFF записать 00 (если не локальный)
 			if err := b.w.WriteByte(0); err != nil {
-				return err
+				return errors.New("Can't write a bit\n" + err.Error())
 			}
 		}
 		b.buf = 0
@@ -134,7 +140,7 @@ func (b *BinWriter) CreateBitsArray(val uint16, len byte) []bool {
 func (b *BinWriter) WriteBits(bits []bool) error {
 	for _, bit := range bits {
 		if err := b.WriteBit(bit); err != nil {
-			return err
+			return errors.New("Can't write a bits array\n" + err.Error())
 		}
 	}
 	return nil
@@ -145,15 +151,20 @@ func (b *BinWriter) WriteArray(data []byte) error {
 	if err := b.FlushBits(); err != nil {
 		return err
 	}
-	_, err := b.w.Write(data)
-	return err
+	if _, err := b.w.Write(data); err != nil {
+		return errors.New("Can't write a byte array\n" + err.Error())
+	}
+	return nil
 }
 
 // Запись байта парой из 4бит
 func (b *BinWriter) Write4Bit(left byte, right byte) error {
 	res := left << 4
 	res += right
-	return b.WriteByte(res)
+	if err := b.WriteByte(res); err != nil {
+		return errors.New("Can't write a 4-bits pair\n" + err.Error())
+	}
+	return nil
 }
 
 // Завершить запись файла (данные записываются в память)
