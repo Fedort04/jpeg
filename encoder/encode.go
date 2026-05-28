@@ -34,7 +34,6 @@ func (jpeg *Encoder) convertToYCbCr() shared.YCbCrMatrix {
 			} else {
 				realJ = j
 			}
-			//@todo здесь подумать над оптимизацией вычислений
 			data[realI][realJ].ToYCbCr(&img[i][j])
 		}
 	}
@@ -249,31 +248,31 @@ func (jpeg *Encoder) encodeDC(val int16, table *huffman.HuffTable, ch byte) erro
 }
 
 // Кодирование AC-элемента
-func (jpeg *Encoder) encodeAC(dataUnit []int16, ss byte, send byte, table *huffman.HuffTable) error {
+func (jpeg *Encoder) encodeAC(dataUnit []int16, table *huffman.HuffTable) error {
 	var zeroCounter byte
 
-	for k := ss; k <= send; k++ {
-		val := dataUnit[k]
+	for k := shared.BaselineSS + 1; k <= shared.BaselineSE; k++ {
+		val := shared.Truncate(dataUnit[k], 0)
 		if val == 0 {
 			zeroCounter++
 			continue
 		}
 
-		se := &stickyEncoder{encoder: jpeg}
+		seenc := &stickyEncoder{encoder: jpeg}
 		// ZRL для каждых 16 нулей
-		for zeroCounter >= 16 {
-			se.encodeSymbol(shared.ZRL, table)
-			zeroCounter -= 16
+		for zeroCounter >= shared.MaxZeros {
+			seenc.encodeSymbol(shared.ZRL, table)
+			zeroCounter -= shared.MaxZeros
 		}
 
 		// Кодировка ненулевого значения
 		ssss := shared.FindCategory(val)
 		rs := (zeroCounter << 4) | ssss
-		se.encodeSymbol(rs, table)
-		se.encodeAddVal(val, ssss)
+		seenc.encodeSymbol(rs, table)
+		seenc.encodeAddVal(val, ssss)
 
-		if se.err != nil {
-			return errors.New("Error when encode an AC symbol\n" + se.err.Error())
+		if seenc.err != nil {
+			return errors.New("Error when encode an AC symbol\n" + seenc.err.Error())
 		}
 
 		zeroCounter = 0
@@ -298,7 +297,7 @@ func (jpeg *Encoder) dataUnitEncode(dataUnit []int16, channel byte) error {
 
 	se := &stickyEncoder{encoder: jpeg}
 	se.encodeDC(dataUnit[0], dcTable, channel)
-	se.encodeAC(dataUnit, shared.BaselineSS+1, shared.BaselineSE, acTable)
+	se.encodeAC(dataUnit, acTable)
 
 	if se.err != nil {
 		return se.err
@@ -357,21 +356,17 @@ func (jpeg *Encoder) encodeEOB(table *huffman.HuffTable) error {
 	return nil
 }
 
-func Truncate(v int16, app byte) int16 {
-	if app == 0 {
-		return v
-	}
-	divisor := int16(1 << app)
-	return v / divisor
-}
-
 // Кодирование AC с учетом EOB
-func (jpeg *Encoder) encodeEOBAC(dataUnit []int16, ss byte, se byte, app byte, table *huffman.HuffTable) error {
+func (jpeg *Encoder) encodeEOBAC(cfg *mcu.ProgressiveConfig, table *huffman.HuffTable) error {
 	allZero := true
-	for k := ss; k <= se; k++ {
-		if Truncate(dataUnit[k], app) != 0 {
+	var zeroCounter, count byte
+
+	for count = cfg.SS; count <= cfg.SE; count++ {
+		if shared.Truncate(cfg.Row[count], cfg.App) != 0 {
 			allZero = false
 			break
+		} else {
+			zeroCounter++
 		}
 	}
 
@@ -386,18 +381,17 @@ func (jpeg *Encoder) encodeEOBAC(dataUnit []int16, ss byte, se byte, app byte, t
 		}
 	}
 
-	var zeroCounter byte
-	for k := ss; k <= se; k++ {
-		val := Truncate(dataUnit[k], app)
+	for ; count <= cfg.SE; count++ {
+		val := shared.Truncate(cfg.Row[count], cfg.App)
 		if val == 0 {
 			zeroCounter++
 			continue
 		}
 
 		seenc := &stickyEncoder{encoder: jpeg}
-		for zeroCounter >= 16 {
+		for zeroCounter >= shared.MaxZeros {
 			seenc.encodeSymbol(shared.ZRL, table)
-			zeroCounter -= 16
+			zeroCounter -= shared.MaxZeros
 		}
 
 		// Кодировка ненулевого значения
@@ -419,14 +413,14 @@ func (jpeg *Encoder) encodeEOBAC(dataUnit []int16, ss byte, se byte, app byte, t
 	return nil
 }
 
-// Кодирование прогрессивного AC скана
-func (jpeg *Encoder) encodeProgressiveAC(blocks [][]mcu.CodingBlock, ch byte, table *huffman.HuffTable, ss byte, se byte) error {
+// Кодирование обычного прогрессивного AC скана
+func (jpeg *Encoder) encodeProgressiveAC(blocks [][]mcu.CodingBlock, ch byte, table *huffman.HuffTable, ss, se byte) error {
 	var err error
 
 	switch ch {
 	case byte(mcu.Y):
 		jpeg.foreachY(blocks, func(data []int16) {
-			err = jpeg.encodeEOBAC(data, ss, se, jpeg.curYApp, table)
+			err = jpeg.encodeEOBAC(&mcu.ProgressiveConfig{Row: data, SS: ss, SE: se, App: jpeg.curYApp}, table)
 			if err != nil {
 				return
 			}
@@ -434,7 +428,7 @@ func (jpeg *Encoder) encodeProgressiveAC(blocks [][]mcu.CodingBlock, ch byte, ta
 	case byte(mcu.Cb):
 		for _, row := range blocks {
 			for _, elm := range row {
-				if err = jpeg.encodeEOBAC(elm.Cb, ss, se, jpeg.curCApp, table); err != nil {
+				if err = jpeg.encodeEOBAC(&mcu.ProgressiveConfig{Row: elm.Cb, SS: ss, SE: se, App: jpeg.curCApp}, table); err != nil {
 					return err
 				}
 			}
@@ -442,7 +436,7 @@ func (jpeg *Encoder) encodeProgressiveAC(blocks [][]mcu.CodingBlock, ch byte, ta
 	case byte(mcu.Cr):
 		for _, row := range blocks {
 			for _, elm := range row {
-				if err = jpeg.encodeEOBAC(elm.Cr, ss, se, jpeg.curCApp, table); err != nil {
+				if err = jpeg.encodeEOBAC(&mcu.ProgressiveConfig{Row: elm.Cr, SS: ss, SE: se, App: jpeg.curCApp}, table); err != nil {
 					return err
 				}
 			}
@@ -457,12 +451,12 @@ func (jpeg *Encoder) encodeProgressiveAC(blocks [][]mcu.CodingBlock, ch byte, ta
 }
 
 // Кодирование одного mcu с refinement
-func (jpeg *Encoder) encodeRefinementUnit(row []int16, app byte, table *huffman.HuffTable) error {
+func (jpeg *Encoder) encodeRefinementAC(row []int16, app byte, table *huffman.HuffTable) error {
 	allZero := true
 	tempBuffer := binwriter.LocalBinWriterInit(&bytes.Buffer{})
 
-	for k := approxSS; k <= approxSE; k++ {
-		val := Truncate(row[k], app)
+	for k := mcu.ApproxSS; k <= mcu.ApproxSE; k++ {
+		val := shared.Truncate(row[k], app)
 		if val != 0 {
 			if shared.CheckHistory(row[k], app) {
 				allZero = false
@@ -483,13 +477,13 @@ func (jpeg *Encoder) encodeRefinementUnit(row []int16, app byte, table *huffman.
 		return nil
 	}
 
-	var zeroCounter byte
 	var afterLast bool
+	var zeroCounter byte
 	sw := &binwriter.StickyWriter{Writer: jpeg.writer}
 	se := &stickyEncoder{encoder: jpeg}
 
-	for k := approxSS; k <= approxSE; k++ {
-		val := Truncate(row[k], app)
+	for k := mcu.ApproxSS; k <= mcu.ApproxSE; k++ {
+		val := shared.Truncate(row[k], app)
 
 		if val == 0 {
 			zeroCounter++
@@ -497,14 +491,14 @@ func (jpeg *Encoder) encodeRefinementUnit(row []int16, app byte, table *huffman.
 		}
 
 		// ZRL для каждых 16 нулей
-		for zeroCounter >= 16 {
+		for zeroCounter >= shared.MaxZeros {
 			if jpeg.eobCounter != 0 {
 				se.encodeEOB(table)
 				sw.MergeFrom(jpeg.eobBuffer)
 			}
 			se.encodeSymbol(shared.ZRL, table)
 			sw.MergeFrom(tempBuffer)
-			zeroCounter -= 16
+			zeroCounter -= shared.MaxZeros
 
 			if sw.Err != nil {
 				return errors.New("Error when encode an AC Refine value" + sw.Err.Error())
@@ -555,13 +549,13 @@ func (jpeg *Encoder) encodeRefinementUnit(row []int16, app byte, table *huffman.
 }
 
 // Кодирование refinement AC скана
-func (jpeg *Encoder) encodeRefinementAC(blocks [][]mcu.CodingBlock, ch byte, table *huffman.HuffTable) error {
+func (jpeg *Encoder) encodeRefinementUnit(blocks [][]mcu.CodingBlock, ch byte, table *huffman.HuffTable) error {
 	var err error
 
 	switch ch {
 	case byte(mcu.Y):
 		jpeg.foreachY(blocks, func(data []int16) {
-			err = jpeg.encodeRefinementUnit(data, jpeg.curYApp, table)
+			err = jpeg.encodeRefinementAC(data, jpeg.curYApp, table)
 			if err != nil {
 				return
 			}
@@ -569,7 +563,7 @@ func (jpeg *Encoder) encodeRefinementAC(blocks [][]mcu.CodingBlock, ch byte, tab
 	case byte(mcu.Cb):
 		for _, row := range blocks {
 			for _, elm := range row {
-				if err = jpeg.encodeRefinementUnit(elm.Cb, jpeg.curCApp, table); err != nil {
+				if err = jpeg.encodeRefinementAC(elm.Cb, jpeg.curCApp, table); err != nil {
 					return err
 				}
 			}
@@ -577,7 +571,7 @@ func (jpeg *Encoder) encodeRefinementAC(blocks [][]mcu.CodingBlock, ch byte, tab
 	case byte(mcu.Cr):
 		for _, row := range blocks {
 			for _, elm := range row {
-				if err = jpeg.encodeRefinementUnit(elm.Cr, jpeg.curCApp, table); err != nil {
+				if err = jpeg.encodeRefinementAC(elm.Cr, jpeg.curCApp, table); err != nil {
 					return err
 				}
 			}
@@ -637,25 +631,58 @@ func (jpeg *Encoder) foreachY(blocks [][]mcu.CodingBlock, f func([]int16)) {
 	}
 }
 
+// Обертка, которая возвращает функцию предварительных действий для вычисления гистограммы progressive
+func (jpeg *Encoder) progressiveHistPrepare(res map[uint16]int) func(cfg *mcu.ProgressiveConfig, zeroCounter *byte, count *byte) bool {
+	return func(cfg *mcu.ProgressiveConfig, zeroCounter *byte, count *byte) bool {
+		allZero := true
+		for *count = cfg.SS; *count <= cfg.SE; *count++ {
+			if shared.Truncate(cfg.Row[*count], cfg.App) != 0 {
+				allZero = false
+				break
+			} else {
+				*zeroCounter++
+			}
+		}
+
+		if allZero {
+			jpeg.eobCounter++
+			return false
+		}
+
+		if jpeg.eobCounter != 0 {
+			ssss := shared.FindCategory(int16(jpeg.eobCounter)) - 1
+			res[uint16(ssss<<4)]++
+			jpeg.eobCounter = 0
+		}
+		return true
+	}
+}
+
 // Нахождение гистограммы по каналу
-func (jpeg *Encoder) histFound(blocks [][]mcu.CodingBlock, ch byte, ss byte, se byte, app byte, isProgressive bool) map[uint16]int {
+func (jpeg *Encoder) histFound(blocks [][]mcu.CodingBlock, ch byte, cfg *mcu.ProgressiveConfig, isProgressive bool) map[uint16]int {
 	res := make(map[uint16]int)
+	prep := jpeg.progressiveHistPrepare(res)
+	eobFunc := func() { jpeg.eobCounter++ }
+
 	if isProgressive {
 		switch ch {
 		case byte(mcu.Y): //Для яркости
 			jpeg.foreachY(blocks, func(data []int16) {
-				shared.MergeInto(res, mcu.ChannelHistProg(data, ss, se, app, &jpeg.eobCounter))
+				cfg.Row = data
+				mcu.ChannelHist(res, cfg, prep, eobFunc)
 			})
 		case byte(mcu.Cb):
 			for _, row := range blocks {
 				for _, elm := range row {
-					shared.MergeInto(res, mcu.ChannelHistProg(elm.Cb, ss, se, app, &jpeg.eobCounter))
+					cfg.Row = elm.Cb
+					mcu.ChannelHist(res, cfg, prep, eobFunc)
 				}
 			}
 		case byte(mcu.Cr):
 			for _, row := range blocks {
 				for _, elm := range row {
-					shared.MergeInto(res, mcu.ChannelHistProg(elm.Cr, ss, se, app, &jpeg.eobCounter))
+					cfg.Row = elm.Cr
+					mcu.ChannelHist(res, cfg, prep, eobFunc)
 				}
 			}
 		}
@@ -667,7 +694,7 @@ func (jpeg *Encoder) histFound(blocks [][]mcu.CodingBlock, ch byte, ss byte, se 
 	} else {
 		for _, row := range blocks {
 			for _, elm := range row {
-				shared.MergeInto(res, elm.GetChannelHist(ch, ss, se))
+				elm.GetBlockHist(res, ch, cfg.SS, cfg.SE)
 			}
 		}
 	}
@@ -675,7 +702,7 @@ func (jpeg *Encoder) histFound(blocks [][]mcu.CodingBlock, ch byte, ss byte, se 
 }
 
 // Нахождение гистограммы для refinement скана по каналу
-func (jpeg *Encoder) histRefinement(blocks [][]mcu.CodingBlock, ch byte, app byte) map[uint16]int {
+func (jpeg *Encoder) histRefinement(blocks [][]mcu.CodingBlock, ch, app byte) map[uint16]int {
 	res := make(map[uint16]int)
 	switch ch {
 	case byte(mcu.Y):

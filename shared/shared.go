@@ -27,7 +27,7 @@ func (cur *Rgb) ToYCbCr(res *YCbCr) {
 }
 
 // Generic функция для создания матриц
-func CreateMatrix[T any](height int, width int) [][]T {
+func CreateMatrix[T any](height, width int) [][]T {
 	res := make([][]T, height)
 	for i := range height {
 		res[i] = make([]T, width)
@@ -83,7 +83,7 @@ func (cur *YCbCr) ToRGB(res *Rgb) {
 }
 
 // Создание пустого блока размерами [height][width] из MCU(8х8) в YCbCr
-func CreateYCbCrBlock(height byte, width byte, unitRowCount int, unitColCount int) [][]YCbCrMatrix {
+func CreateYCbCrBlock(height, width byte, unitRowCount, unitColCount int) [][]YCbCrMatrix {
 	res := make([][]YCbCrMatrix, height)
 	for i := range height {
 		res[i] = make([]YCbCrMatrix, width)
@@ -113,6 +113,14 @@ func Abs[T Number](val T) T {
 	return T(math.Abs(float64(val)))
 }
 
+func Truncate(v int16, app byte) int16 {
+	if app == 0 {
+		return v
+	}
+	divisor := int16(1 << app)
+	return v / divisor
+}
+
 // Проверка, был ли значимым этот коэфф в предыдущем скане аппроксимации
 // Передача оригинального значения
 func CheckHistory(val int16, app byte) bool {
@@ -128,7 +136,7 @@ func CopyToMatrix[T any](src [][]T, dst *[][]T) {
 
 	newMatrix := make([][]T, len(src))
 
-	for i := range len(src) {
+	for i := range src {
 		if src[i] != nil {
 			newMatrix[i] = make([]T, len(src[i]))
 			copy(newMatrix[i], src[i])
@@ -140,16 +148,11 @@ func CopyToMatrix[T any](src [][]T, dst *[][]T) {
 	*dst = newMatrix
 }
 
-// Вычисление среднего значения двух чисел
-func Average[T Number](a, b T) T {
-	return T(float64(a+b) / 2)
-}
-
 // Умножение каждого элемента матрицы на число
 func MultMatrixOnNumber[T Number](matrix [][]T, number T) [][]T {
 	res := CreateMatrix[T](len(matrix), len(matrix[0]))
-	for i := range len(matrix) {
-		for j := range len(matrix[i]) {
+	for i, row := range matrix {
+		for j := range row {
 			res[i][j] = matrix[i][j] * number
 		}
 	}
@@ -234,6 +237,7 @@ const (
 
 const EndOfBlock = 0x00   //Конец блока AC
 const ZRL = 0xF0          //группа из 16 нулей
+const MaxZeros = 16       //Кол-во нулей для ZRL
 const NumOfRstMarkers = 8 //Количество RST маркеров
 const NumOfTables = 4     //Максимальное количество таблиц
 const NumOfChannels = 3   //Максимальное количество цветовых компонент

@@ -366,7 +366,7 @@ func encodeImageSteps(filepath string, img shared.Image, isProgressive bool, ste
 	}
 	writer.Flush()
 
-	// Common(filepath)
+	Common(filepath)
 }
 
 // Записать постепенно (создает множество неполностью записанных jpeg изображений)
@@ -399,7 +399,7 @@ func main() {
 		// encodeImage(encoderProgressivePath+filename+".jpeg", Common(os.Args[i]), true)
 		// encodeBaselineSequence(encoderBaselinePath+filename+".jpg", Common(os.Args[i]), 100)
 		// encodeProgressiveSequence(encoderProgressivePath+filename+".jpg", Common(os.Args[i]), 1)
-		// encodeImageSteps(encoderBaselinePath+filename+".jpg", Common(os.Args[i]), false, 100)
+		encodeImageSteps(encoderBaselinePath+filename+".jpg", Common(os.Args[i]), false, 100)
 		encodeImageSteps(encoderProgressivePath+filename+".jpeg", Common(os.Args[i]), true, 1)
 	}
 }

@@ -182,7 +182,7 @@ func (jpeg *Decoder) makeRestart() bool {
 
 // Декодирование блока MCU Baseline
 // x y координаты левого верхнего MCU в блоке
-func (jpeg *Decoder) decodeBaselineBlock(x uint16, y uint16) error {
+func (jpeg *Decoder) decodeBaselineBlock(x, y uint16) error {
 	for i, comp := range jpeg.comps {
 		if !comp.used {
 			continue
@@ -254,7 +254,7 @@ func (jpeg *Decoder) decodeBaselineScan(increment uint16) (uint16, error) {
 
 // Пропуск нулей при refinement
 // Возвращает индекс следующего за промежутком нуля или endIndex
-func (jpeg *Decoder) RefinementZeroSkip(data []int16, zeros byte, startIndex byte, endIndex byte) (byte, error) {
+func (jpeg *Decoder) RefinementZeroSkip(data []int16, zeros, startIndex, endIndex byte) (byte, error) {
 	for k := startIndex; k <= endIndex; k++ {
 		if data[k] == 0 {
 			if zeros == 0 {
@@ -288,7 +288,7 @@ func (jpeg *Decoder) RefinementZeroSkip(data []int16, zeros byte, startIndex byt
 
 // Декодирование блока MCU Progressive (используется только для DC)
 // x y координаты левого верхнего MCU в блоке
-func (jpeg *Decoder) decodeProgressiveDC(x uint16, y uint16) error {
+func (jpeg *Decoder) decodeProgressiveDC(x, y uint16) error {
 	for i, comp := range jpeg.comps {
 		if !comp.used {
 			continue
@@ -468,7 +468,7 @@ func (jpeg *Decoder) decodeProgressiveScan() error {
 
 // Вычисление YCbCr для канала ch
 // x y - координаты левого верхнего MCU в блоке
-func (jpeg *Decoder) componentCalc(x uint, y uint, res [][]shared.YCbCrMatrix, ch mcu.Channel, readAll bool) {
+func (jpeg *Decoder) componentCalc(x, y uint, res [][]shared.YCbCrMatrix, ch mcu.Channel, readAll bool) {
 	// Перевод в YCbCr
 	for curV := range uint16(jpeg.comps[ch].v) {
 		for curH := range uint16(jpeg.comps[ch].h) {
@@ -510,7 +510,7 @@ func (jpeg *Decoder) componentCalc(x uint, y uint, res [][]shared.YCbCrMatrix, c
 
 // Копирование в результат информации из блока YCbCrMatrix
 // x y - координаты левого верхнего угла блока в результате
-func (jpeg *Decoder) copyToRes(curMatrix shared.YCbCrMatrix, res [][]shared.Rgb, x int, y int) {
+func (jpeg *Decoder) copyToRes(curMatrix shared.YCbCrMatrix, res [][]shared.Rgb, x, y int) {
 	for i := 0; i < len(curMatrix) && x+i < int(jpeg.ImageHeight); i++ {
 		for j := 0; j < len(curMatrix[0]) && y+j < int(jpeg.ImageWidth); j++ {
 			curMatrix[i][j].ToRGB(&res[x+i][y+j])
@@ -519,7 +519,7 @@ func (jpeg *Decoder) copyToRes(curMatrix shared.YCbCrMatrix, res [][]shared.Rgb,
 }
 
 // Вычисления над прочитанными данными, readAll - флаг чтения всего изображения сразу для отпимизации
-func (jpeg *Decoder) rgbCalc(readAll bool, startRow int, endRow int) {
+func (jpeg *Decoder) rgbCalc(readAll bool, startRow, endRow int) {
 	var rowMax int
 	var row int
 	if jpeg.IsProgressive {

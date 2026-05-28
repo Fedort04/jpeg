@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	binreader "jpeg/internal/binReader"
+	"math"
 	"slices"
 	"sort"
 )
@@ -20,9 +21,112 @@ type HuffTable struct {
 	codeLength []byte   // Длина кодов для символов
 }
 
+// Создание цепочек символов для формирования кодов
+func chainsCreate(freq, codesize, mergeChain []int) {
+	for {
+		node1, node2 := -1, -1
+		minFreq1, minFreq2 := math.MaxInt, math.MaxInt
+		for v, f := range freq {
+			if f > 0 {
+				if f < minFreq1 || (f == minFreq1 && v > node1) {
+					minFreq2, node2 = minFreq1, node1
+					minFreq1, node1 = f, v
+				} else if f < minFreq2 || (f == minFreq2 && v > node2) {
+					minFreq2, node2 = f, v
+				}
+			}
+		}
+		if node2 == -1 {
+			break
+		}
+
+		freq[node1] += freq[node2]
+		freq[node2] = 0
+
+		for v := node1; v != -1; v = mergeChain[v] {
+			codesize[v]++
+		}
+		for v := node2; v != -1; v = mergeChain[v] {
+			codesize[v]++
+		}
+		last := node1
+		for mergeChain[last] != -1 {
+			last = mergeChain[last]
+		}
+		mergeChain[last] = node2
+	}
+}
+
+// Пара для сортировки символов
+type symFreq struct {
+	sym  uint16
+	freq int
+}
+
+// Сортируем реальные символы по частоте (убывание) и по возрастанию значения символа
+func symbolSort(hist map[uint16]int) []symFreq {
+	syms := make([]symFreq, 0, len(hist))
+	syms = append(syms, symFreq{sym: maxSymJPEG, freq: 0})
+	for sym, f := range hist {
+		syms = append(syms, symFreq{sym, f})
+	}
+	sort.Slice(syms, func(i, j int) bool {
+		if syms[i].freq != syms[j].freq {
+			return syms[i].freq > syms[j].freq
+		}
+		return syms[i].sym < syms[j].sym
+	})
+	return syms
+}
+
+// Обновляем длины кодов согласно bits
+func updateCodeLen(bits []int, syms []symFreq) []int {
+	newCodeLen := make([]int, maxSymJPEG+1)
+	idx := 0
+	for length := 1; length <= NumHuffCodesLen; length++ {
+		count := bits[length]
+		for count > 0 {
+			newCodeLen[syms[idx].sym] = length
+			idx++
+			count--
+		}
+	}
+	reserveLen := newCodeLen[maxSymJPEG]
+	bits[reserveLen]--
+	newCodeLen[maxSymJPEG] = 0
+	return newCodeLen
+}
+
+// Пара для сортировки HUFFVAL
+type symLen struct {
+	sym uint16
+	len int
+}
+
+// Формирование массива HUFFVAL (символы, упорядоченные по длине, для одинаковой длины – по символу)
+func makeHUFFVAL(hist map[uint16]int, newCodeLen []int) []byte {
+	symbols := []byte{}
+	sorted := make([]symLen, 0, len(hist))
+	for sym := range hist {
+		if l := newCodeLen[sym]; l > 0 {
+			sorted = append(sorted, symLen{sym, l})
+		}
+	}
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].len != sorted[j].len {
+			return sorted[i].len < sorted[j].len
+		}
+		return sorted[i].sym < sorted[j].sym
+	})
+	for _, s := range sorted {
+		symbols = append(symbols, byte(s.sym))
+	}
+	return symbols
+}
+
 // Подсчет кодов всех длин
 func countBits(codesize []int) []int {
-	bits := make([]int, 33)
+	bits := make([]int, NumHuffCodesLen*2+1)
 	for v := range maxSymJPEG + 1 {
 		if L := codesize[v]; L > 0 {
 			bits[L]++
@@ -33,7 +137,7 @@ func countBits(codesize []int) []int {
 
 // Оптимизация таблицы Хаффмана
 func adjustBits(bits []int) {
-	for i := 32; i > 16; i-- {
+	for i := NumHuffCodesLen * 2; i > NumHuffCodesLen; i-- {
 		for bits[i] > 0 {
 			j := i - 2
 			for bits[j] == 0 {
@@ -49,7 +153,6 @@ func adjustBits(bits []int) {
 
 // MakeHuffTable строит таблицу Хаффмана по алгоритму JPEG (Annex K.2 / libjpeg)
 func MakeHuffTable(hist map[uint16]int) ([]byte, []byte) {
-
 	freq := make([]int, maxSymJPEG+1)
 	for sym, f := range hist {
 		freq[sym] = f
@@ -57,94 +160,22 @@ func MakeHuffTable(hist map[uint16]int) ([]byte, []byte) {
 	freq[maxSymJPEG] = 1
 
 	codesize := make([]int, maxSymJPEG+1)
-	others := make([]int, maxSymJPEG+1)
-	for i := range others {
-		others[i] = -1
+	mergeChain := make([]int, maxSymJPEG+1)
+	for i := range mergeChain {
+		mergeChain[i] = -1
 	}
 
-	for {
-		v1, v2 := -1, -1
-		min1, min2 := int(^uint(0)>>1), int(^uint(0)>>1)
-		for v, f := range freq {
-			if f > 0 {
-				if f < min1 || (f == min1 && v > v1) {
-					min2, v2 = min1, v1
-					min1, v1 = f, v
-				} else if f < min2 || (f == min2 && v > v2) {
-					min2, v2 = f, v
-				}
-			}
-		}
-		if v2 == -1 {
-			break
-		}
-
-		freq[v1] += freq[v2]
-		freq[v2] = 0
-
-		for v := v1; v != -1; v = others[v] {
-			codesize[v]++
-		}
-		for v := v2; v != -1; v = others[v] {
-			codesize[v]++
-		}
-		last := v1
-		for others[last] != -1 {
-			last = others[last]
-		}
-		others[last] = v2
-	}
+	chainsCreate(freq, codesize, mergeChain)
 
 	bits := countBits(codesize)
 	adjustBits(bits)
 
-	// Сортируем реальные символы по частоте (убывание) и по возрастанию значения символа
-	type symFreq struct {
-		sym  uint16
-		freq int
-	}
-	syms := make([]symFreq, 0, len(hist))
-	syms = append(syms, symFreq{sym: maxSymJPEG, freq: 0})
-	for sym, f := range hist {
-		syms = append(syms, symFreq{sym, f})
-	}
-	sort.Slice(syms, func(i, j int) bool {
-		if syms[i].freq != syms[j].freq {
-			return syms[i].freq > syms[j].freq
-		}
-		return syms[i].sym < syms[j].sym
-	})
+	syms := symbolSort(hist)
 
-	// Назначаем длины кодов согласно bits
-	newCodeLen := make([]int, maxSymJPEG+1)
-	idx := 0
-	for length := 1; length <= NumHuffCodesLen; length++ {
-		count := bits[length]
-		for count > 0 {
-			newCodeLen[syms[idx].sym] = length
-			idx++
-			count--
-		}
-	}
-	reserveLen := newCodeLen[maxSymJPEG]
-	bits[reserveLen]--
-	newCodeLen[maxSymJPEG] = 0
+	newCodeLen := updateCodeLen(bits, syms)
 
 	// Формируем HUFFVAL: символы, упорядоченные по длине, для одинаковой длины – по символу
-	symbols := []byte{}
-	for length := 1; length <= NumHuffCodesLen; length++ {
-		// Собираем символы этой длины в порядке возрастания символа
-		var symsAtLen []uint16
-		for _, s := range syms {
-			if newCodeLen[s.sym] == length {
-				symsAtLen = append(symsAtLen, s.sym)
-			}
-		}
-		sort.Slice(symsAtLen, func(i, j int) bool { return symsAtLen[i] < symsAtLen[j] })
-		for _, s := range symsAtLen {
-			symbols = append(symbols, byte(s))
-		}
-	}
+	symbols := makeHUFFVAL(hist, newCodeLen)
 
 	// Формируем BITS для выходной таблицы (длины 1..16)
 	bitsBytes := make([]byte, NumHuffCodesLen)
@@ -180,7 +211,7 @@ func (h *HuffTable) DecodeHuff(reader *binreader.BinReader) (uint16, error) {
 }
 
 // Восстановление кодов таблицы Хаффмана и конструирование объекта
-func RecoverHuffTable(offset []byte, symbols []byte) (*HuffTable, error) {
+func RecoverHuffTable(offset, symbols []byte) (*HuffTable, error) {
 	if offset[NumHuffCodesLen] > maxNumHuffSym {
 		return nil, errors.New("Huffman recovery error: too much symbols")
 	}

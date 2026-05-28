@@ -31,11 +31,11 @@ func (se *stickyEncoder) encodeDC(val int16, table *huffman.HuffTable, ch byte) 
 	se.err = se.encoder.encodeDC(val, table, ch)
 }
 
-func (se *stickyEncoder) encodeAC(dataUnit []int16, ss byte, send byte, acTable *huffman.HuffTable) {
+func (se *stickyEncoder) encodeAC(dataUnit []int16, acTable *huffman.HuffTable) {
 	if se.err != nil {
 		return
 	}
-	se.err = se.encoder.encodeAC(dataUnit, ss, send, acTable)
+	se.err = se.encoder.encodeAC(dataUnit, acTable)
 }
 
 func (se *stickyEncoder) writeStartImg() {

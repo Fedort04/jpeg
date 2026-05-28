@@ -33,6 +33,8 @@ var idctTable = [8][8]float64{
 
 const UnitRowCount = 8 //Количество строк в mcu
 const UnitColCount = 8 //Количество столбцов в mcu
+const ApproxSS = 1     //SS для сканов аппроксимации
+const ApproxSE = 63    //SE для сканов аппроксимации
 
 type Channel byte
 
@@ -60,7 +62,7 @@ func MakeMCU() MCU {
 }
 
 // Сoздание пустой матрицы MCU
-func CreateMCUMatrix(MCUsHeight uint16, MCUsWidth uint16) [][]MCU {
+func CreateMCUMatrix(MCUsHeight, MCUsWidth uint16) [][]MCU {
 	blocks := make([][]MCU, MCUsHeight)
 	for i := range MCUsHeight {
 		blocks[i] = make([]MCU, MCUsWidth)
@@ -222,7 +224,7 @@ func (block *BlockRaw) DCT() {
 }
 
 // Квантование блока MCU
-func (block *BlockRaw) Quantization(tableY [][]byte, tableColor [][]byte) {
+func (block *BlockRaw) Quantization(tableY, tableColor [][]byte) {
 	for _, arr := range block.Y {
 		for _, elm := range arr {
 			elm.quantization(tableY)
@@ -233,7 +235,7 @@ func (block *BlockRaw) Quantization(tableY [][]byte, tableColor [][]byte) {
 }
 
 // Зиг-заг преобразование для всего блока
-func (block *BlockRaw) ZigZag(maxH byte, maxV byte) CodingBlock {
+func (block *BlockRaw) ZigZag(maxH, maxV byte) CodingBlock {
 	var res CodingBlock
 	res.Y = make([][]int16, maxH*maxV)
 
@@ -257,21 +259,34 @@ type CodingBlock struct {
 	Cr []int16
 }
 
-// Получение гистоаграммы из массива row в отрезке ss-se
-func channelHist(row []int16, ss byte, se byte) map[uint16]int {
-	res := make(map[uint16]int)
-	var zeroCounter byte
+// Структура конфигурации для вычисления гистограммы
+type ProgressiveConfig struct {
+	Row []int16
+	SS  byte
+	SE  byte
+	App byte
+}
 
-	for k := ss; k <= se; k++ {
-		val := row[k]
+// Получение гистограммы по конфигурации с выполнением действий до операции и после операции, если остались нули
+// before - опциональная функция
+func ChannelHist(res map[uint16]int, config *ProgressiveConfig, before func(cfg *ProgressiveConfig, zeroCounter, count *byte) bool, after func()) {
+	var zeroCounter, count byte
+	if before != nil {
+		if !before(config, &zeroCounter, &count) {
+			return
+		}
+	}
+
+	for ; count <= config.SE; count++ {
+		val := shared.Truncate(config.Row[count], config.App)
 		if val == 0 {
 			zeroCounter++
 			continue
 		}
 
-		for zeroCounter >= 16 {
-			zeroCounter -= 16
+		for zeroCounter >= shared.MaxZeros {
 			res[shared.ZRL]++
+			zeroCounter -= shared.MaxZeros
 		}
 
 		ssss := shared.FindCategory(val)
@@ -281,84 +296,30 @@ func channelHist(row []int16, ss byte, se byte) map[uint16]int {
 	}
 
 	if zeroCounter > 0 {
-		res[shared.EndOfBlock]++
+		after()
 	}
-	return res
-}
-
-func Truncate(v int16, app byte) int16 {
-	if app == 0 {
-		return v
-	}
-	divisor := int16(1 << app)
-	return v / divisor
-}
-
-// Гистограмма частоты для прогрессива
-func ChannelHistProg(row []int16, ss byte, se byte, app byte, eobCounter *int) map[uint16]int {
-	res := make(map[uint16]int)
-	allZero := true
-	for k := ss; k <= se; k++ {
-		temp := Truncate(row[k], app)
-		if temp != 0 {
-			allZero = false
-			break
-		}
-	}
-
-	if allZero {
-		*eobCounter++
-		return res
-	}
-
-	if *eobCounter != 0 {
-		ssss := shared.FindCategory(int16(*eobCounter)) - 1
-		res[uint16(ssss<<4)]++
-		*eobCounter = 0
-	}
-
-	var zeroCounter byte
-
-	for k := ss; k <= se; k++ {
-		val := Truncate(row[k], app)
-		if val == 0 {
-			zeroCounter++
-			continue
-		}
-
-		for zeroCounter >= 16 {
-			zeroCounter -= 16
-			res[shared.ZRL]++
-		}
-
-		ssss := shared.FindCategory(val)
-		rs := uint16((zeroCounter << 4) | ssss)
-		res[rs]++
-		zeroCounter = 0
-	}
-
-	if zeroCounter > 0 {
-		*eobCounter++
-	}
-	return res
 }
 
 // Получение гистограммы частоты встречаемых символов канала ch в отрезке ss-se
-func (block *CodingBlock) GetChannelHist(ch byte, ss byte, se byte) map[uint16]int {
-	res := make(map[uint16]int)
+func (block *CodingBlock) GetBlockHist(res map[uint16]int, ch, ss, se byte) {
 	channel := Channel(ch)
+	eobFunc := func() {
+		res[shared.EndOfBlock]++
+	}
+	cfg := ProgressiveConfig{SS: ss, SE: se, App: 0}
 
 	switch channel {
 	case Y:
 		for _, row := range block.Y {
-			shared.MergeInto(res, channelHist(row, ss, se))
+			cfg.Row = row
+			ChannelHist(res, &cfg, nil, eobFunc)
 		}
 	default:
-		shared.MergeInto(res, channelHist(block.Cb, ss, se))
-		shared.MergeInto(res, channelHist(block.Cr, ss, se))
+		cfg.Row = block.Cb
+		ChannelHist(res, &cfg, nil, eobFunc)
+		cfg.Row = block.Cr
+		ChannelHist(res, &cfg, nil, eobFunc)
 	}
-
-	return res
 }
 
 // Получение гистограммы частоты встречаемых символов канала ch для refinement скана
@@ -366,8 +327,8 @@ func GetRefinementHist(row []int16, app byte, eobCounter *int) map[uint16]int {
 	res := make(map[uint16]int)
 
 	allZero := true
-	for k := 1; k <= 63; k++ {
-		val := Truncate(row[k], app)
+	for k := ApproxSS; k <= ApproxSE; k++ {
+		val := shared.Truncate(row[k], app)
 		if val != 0 && shared.CheckHistory(row[k], app) {
 			allZero = false
 			break
@@ -381,22 +342,22 @@ func GetRefinementHist(row []int16, app byte, eobCounter *int) map[uint16]int {
 	var zeroCounter byte
 	var afterLast bool
 
-	for k := 1; k <= 63; k++ {
-		val := Truncate(row[k], app)
+	for k := ApproxSS; k <= ApproxSE; k++ {
+		val := shared.Truncate(row[k], app)
 		if val == 0 {
 			zeroCounter++
 			continue
 		}
 
 		// ZRL для каждых 16 нулей
-		for zeroCounter >= 16 {
+		for zeroCounter >= shared.MaxZeros {
 			if *eobCounter != 0 {
 				ssss := shared.FindCategory(int16(*eobCounter)) - 1
 				res[uint16(ssss<<4)]++
 				*eobCounter = 0
 			}
 			res[shared.ZRL]++
-			zeroCounter -= 16
+			zeroCounter -= shared.MaxZeros
 		}
 
 		if shared.CheckHistory(row[k], app) {

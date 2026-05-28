@@ -41,7 +41,7 @@ func (sw *StickyWriter) WriteArray(data []byte) {
 	sw.Err = sw.Writer.WriteArray(data)
 }
 
-func (sw *StickyWriter) Write4Bit(left byte, right byte) {
+func (sw *StickyWriter) Write4Bit(left, right byte) {
 	if sw.Err != nil {
 		return
 	}

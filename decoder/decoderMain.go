@@ -84,7 +84,7 @@ func (jpeg *Decoder) readQuantTable() error {
 	}
 
 	if tq > shared.NumOfTables-1 {
-		return errors.New("DQT segment decode error: invalid table id " + strconv.Itoa(int(tq)))
+		return fmt.Errorf("DQT segment decode error: invalid table id %d", tq)
 	}
 
 	table, err := jpeg.reader.GetArray(shared.SizeOfTable)
@@ -128,7 +128,7 @@ func (jpeg *Decoder) readTables() (uint16, error) {
 			return 0, errors.New(prefix + "Huffman table recovery failed\n" + err.Error())
 		}
 		if th > shared.NumOfTables-1 {
-			return 0, errors.New(prefix + "invalid table id " + strconv.Itoa(int(th)))
+			return 0, fmt.Errorf("%sinvalid table id %d", prefix, th)
 		}
 		switch tc {
 		case 0:
@@ -136,7 +136,7 @@ func (jpeg *Decoder) readTables() (uint16, error) {
 		case 1:
 			jpeg.acTables[th] = huff
 		default:
-			return 0, errors.New(prefix + "invalid table class " + strconv.Itoa(int(tc)))
+			return 0, fmt.Errorf("%sinvalid table class %d", prefix, tc)
 		}
 
 		isContinue = true
@@ -165,7 +165,7 @@ func (jpeg *Decoder) updateFlags() {
 // Чтение заголовка кадра
 func (jpeg *Decoder) readScanHeader() error {
 	const prefix = "SOS segment decode error: invalid "
-	sr := binreader.StickyReader{Reader: jpeg.reader}
+	sr := &binreader.StickyReader{Reader: jpeg.reader}
 	sr.GetWord()
 	ns := sr.GetByte()
 	if sr.Err != nil {
@@ -234,7 +234,7 @@ func (jpeg *Decoder) readFrameHeader() error {
 	}
 
 	if jpeg.samplePrecision != minPrecision && jpeg.samplePrecision != maxPrecision {
-		return errors.New(prefix + "precision " + strconv.Itoa(int(jpeg.samplePrecision)))
+		return fmt.Errorf("%sprecision %d", prefix, jpeg.samplePrecision)
 	}
 
 	jpeg.ImageHeight = sr.GetWord()
@@ -245,7 +245,7 @@ func (jpeg *Decoder) readFrameHeader() error {
 	}
 
 	if jpeg.numOfComps > shared.NumOfChannels {
-		return errors.New(prefix + "num of channels " + strconv.Itoa(int(jpeg.numOfComps)))
+		return fmt.Errorf("%snum of channels %d", prefix, jpeg.numOfComps)
 	}
 
 	for range jpeg.numOfComps {

@@ -158,7 +158,7 @@ func (b *BinWriter) WriteArray(data []byte) error {
 }
 
 // Запись байта парой из 4бит
-func (b *BinWriter) Write4Bit(left byte, right byte) error {
+func (b *BinWriter) Write4Bit(left, right byte) error {
 	res := left << 4
 	res += right
 	if err := b.WriteByte(res); err != nil {
