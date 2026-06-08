@@ -49,10 +49,11 @@ func ProgressiveExample(filename string) {
 	}
 
 	res := shared.CreateMatrix[shared.Rgb](int(jpeg.ImageHeight), int(jpeg.ImageWidth))
+	jpeg.SetBuffer(res)
 
 	flag := false
 	for !flag {
-		flag, err = jpeg.ReadProgJPEG(res, 3)
+		flag, err = jpeg.ReadProgJPEG(3)
 		if err != nil {
 			log.Fatal(err.Error())
 		}
@@ -80,13 +81,14 @@ func ProgressiveSequence(filename string) {
 	}
 
 	res := shared.CreateMatrix[shared.Rgb](int(jpeg.ImageHeight), int(jpeg.ImageWidth))
+	jpeg.SetBuffer(res)
 
 	flag := false
 	count := 1
 	name := GetFileName(filename)
 	path := CreateDir(filename, name+"Sequence")
 	for !flag {
-		flag, err = jpeg.ReadProgJPEG(res, 1)
+		flag, err = jpeg.ReadProgJPEG(1)
 		if err != nil {
 			log.Fatal(err.Error())
 		}
@@ -115,10 +117,11 @@ func BaselineExample(filename string) {
 	}
 
 	res := shared.CreateMatrix[shared.Rgb](int(jpeg.ImageHeight), int(jpeg.ImageWidth))
+	jpeg.SetBuffer(res)
 
 	flag := false
 	for !flag {
-		flag, err = jpeg.ReadProgJPEG(res, 3)
+		flag, err = jpeg.ReadProgJPEG(3)
 		if err != nil {
 			log.Fatal(err.Error())
 		}
@@ -146,13 +149,14 @@ func BaselineSequence(filename string) {
 	}
 
 	res := shared.CreateMatrix[shared.Rgb](int(jpeg.ImageHeight), int(jpeg.ImageWidth))
+	jpeg.SetBuffer(res)
 
 	flag := false
 	count := 1
 	name := GetFileName(filename)
 	path := CreateDir(filename, name+"Sequence")
 	for !flag {
-		flag, err = jpeg.ReadBaseJPEG(res, 100)
+		flag, err = jpeg.ReadBaseJPEG(200)
 		if err != nil {
 			log.Fatal(err.Error())
 		}
@@ -173,13 +177,14 @@ func CommonAll(files []string) {
 		}
 
 		res := shared.CreateMatrix[shared.Rgb](int(jpeg.ImageHeight), int(jpeg.ImageWidth))
+		jpeg.SetBuffer(res)
 
 		if jpeg.IsProgressive {
 			log.Print("Progressive " + files[i])
-			_, err = jpeg.ReadProgJPEG(res, 0)
+			_, err = jpeg.ReadProgJPEG(0)
 		} else {
 			log.Print("Baseline " + files[i])
-			_, err = jpeg.ReadBaseJPEG(res, 0)
+			_, err = jpeg.ReadBaseJPEG(0)
 		}
 
 		if err != nil {
@@ -203,13 +208,14 @@ func Common(files string) shared.Image {
 	}
 
 	res := shared.CreateMatrix[shared.Rgb](int(jpeg.ImageHeight), int(jpeg.ImageWidth))
+	jpeg.SetBuffer(res)
 
 	if jpeg.IsProgressive {
 		log.Print("Progressive " + files)
-		_, err = jpeg.ReadProgJPEG(res, 0)
+		_, err = jpeg.ReadProgJPEG(0)
 	} else {
 		log.Print("Baseline " + files)
-		_, err = jpeg.ReadBaseJPEG(res, 0)
+		_, err = jpeg.ReadBaseJPEG(0)
 	}
 
 	if err != nil {
@@ -366,7 +372,7 @@ func encodeImageSteps(filepath string, img shared.Image, isProgressive bool, ste
 	}
 	writer.Flush()
 
-	Common(filepath)
+	// Common(filepath)
 }
 
 // Записать постепенно (создает множество неполностью записанных jpeg изображений)

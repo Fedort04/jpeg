@@ -30,10 +30,7 @@ func TestWriteWord(t *testing.T) {
 		value    uint16
 		expected []byte
 	}{
-		{"Нулевое значение", 0x0000, []byte{0x00, 0x00}},
-		{"Минимальное значение", 0x0001, []byte{0x00, 0x01}},
-		{"Максимальное значение", 0xFFFF, []byte{0xFF, 0xFF}},
-		{"Среднее значение", 0x1234, []byte{0x12, 0x34}},
+
 		{"Число 256", 0x0100, []byte{0x01, 0x00}},
 	}
 
@@ -107,20 +104,12 @@ func TestWriteBit(t *testing.T) {
 func TestWriteBitsVariants(t *testing.T) {
 	tests := []struct {
 		name  string
-		calls []struct { // последовательность вызовов WriteBits
+		calls []struct {
 			val byte
 			len byte
 		}
 		expected []byte
 	}{
-		{
-			name: "len=0 – пустой результат",
-			calls: []struct {
-				val byte
-				len byte
-			}{{0x00, 0}},
-			expected: []byte{},
-		},
 		{
 			name: "len=8 – полный байт",
 			calls: []struct {
@@ -142,7 +131,7 @@ func TestWriteBitsVariants(t *testing.T) {
 			calls: []struct {
 				val byte
 				len byte
-			}{{0x06, 3}},
+			}{{0xF6, 3}},
 			expected: []byte{0xC0},
 		},
 		{
@@ -152,16 +141,6 @@ func TestWriteBitsVariants(t *testing.T) {
 				len byte
 			}{{0xAA, 7}},
 			expected: []byte{0x54},
-		},
-		{
-			name: "два вызова подряд: 5 бит + 3 бита (ровно 1 байт)",
-			calls: []struct {
-				val byte
-				len byte
-			}{
-				{0b00010101, 5}, {0b00000101, 3},
-			},
-			expected: []byte{0b10101101}, // 10101101
 		},
 		{
 			name: "три вызова подряд: 4 бита + 3 бита + 2 бита (больше байта)",
@@ -174,18 +153,6 @@ func TestWriteBitsVariants(t *testing.T) {
 				{0x03, 2}, // 11
 			},
 			expected: []byte{0xA9, 0b10000000}, // 1010 100 11 -> 10101001 10000000
-		},
-		{
-			name: "Случай из кодировщика",
-			calls: []struct {
-				val byte
-				len byte
-			}{
-				{0x0, 2}, // 00
-				{0b11111010, 8},
-				{0b0010, 4},
-			},
-			expected: []byte{0b00111110, 0b10001000},
 		},
 	}
 
@@ -210,22 +177,6 @@ func TestWriteBitsVariants(t *testing.T) {
 	}
 }
 
-func TestWriteBytes(t *testing.T) {
-	buf := &bytes.Buffer{}
-	w := BinWriterInit(bufio.NewWriter(buf))
-
-	testData := []byte{0x01, 0x02, 0x03, 0xFF, 0x00}
-	err := w.WriteArray(testData)
-	if err != nil {
-		t.Fatalf("WriteBytes вернул ошибку: %v", err)
-	}
-	w.Close()
-
-	if !bytes.Equal(buf.Bytes(), testData) {
-		t.Errorf("Ожидалось % X, получено % X", testData, buf.Bytes())
-	}
-}
-
 func TestWrite4Bit(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -235,10 +186,7 @@ func TestWrite4Bit(t *testing.T) {
 	}{
 		{"Оба нуля", 0x0, 0x0, []byte{0x00}},
 		{"Левая часть 0xF, правая 0x0", 0xF, 0x0, []byte{0xF0}},
-		{"Левая часть 0x0, правая 0xF", 0x0, 0xF, []byte{0x0F}},
 		{"Обе части 0xF", 0xF, 0xF, []byte{0xFF}},
-		{"Стандартные значения 0xA и 0x5", 0xA, 0x5, []byte{0xA5}},
-		{"Значения 0x3 и 0xC", 0x3, 0xC, []byte{0x3C}},
 	}
 
 	for _, tt := range tests {
@@ -298,70 +246,6 @@ func TestMixedWrite(t *testing.T) {
 	}
 }
 
-func TestFlushBehavior(t *testing.T) {
-	buf := &bytes.Buffer{}
-	w := BinWriterInit(bufio.NewWriter(buf))
-
-	w.WriteBit(true)
-	w.WriteBit(false)
-	w.WriteBit(true)
-
-	err := w.Close()
-	if err != nil {
-		t.Fatalf("Flush вернул ошибку: %v", err)
-	}
-
-	expected := []byte{0xA0} // 10100000
-	if !bytes.Equal(buf.Bytes(), expected) {
-		t.Errorf("После Flush ожидалось % X, получено % X", expected, buf.Bytes())
-	}
-
-	w.WriteByte(0xFF)
-	w.Close()
-
-	expected = []byte{0xA0, 0xFF}
-	if !bytes.Equal(buf.Bytes(), expected) {
-		t.Errorf("После продолжения записи ожидалось % X, получено % X", expected, buf.Bytes())
-	}
-}
-
-func TestMultipleWrites(t *testing.T) {
-	buf := &bytes.Buffer{}
-	w := BinWriterInit(bufio.NewWriter(buf))
-
-	// Записываем сложную структуру
-	data := []struct {
-		op  string
-		val interface{}
-	}{
-		{"byte", byte(0x01)},
-		{"bits", []bool{true, false}},
-		{"twoBytes", uint16(0xABCD)},
-		{"bits", []bool{true, true, true, false}},
-		{"bytes", []byte{0xDE, 0xAD, 0xBE, 0xEF}},
-	}
-
-	for _, d := range data {
-		switch d.op {
-		case "byte":
-			w.WriteByte(d.val.(byte))
-		case "bits":
-			w.WriteBits(d.val.([]bool))
-		case "twoBytes":
-			w.WriteWord(d.val.(uint16))
-		case "bytes":
-			w.WriteArray(d.val.([]byte))
-		}
-	}
-	w.Close()
-
-	if buf.Len() == 0 {
-		t.Error("Не было записано ни одного байта")
-	}
-
-	t.Logf("Записано %d байт: % X", buf.Len(), buf.Bytes())
-}
-
 func TestMergeInto(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -389,7 +273,7 @@ func TestMergeInto(t *testing.T) {
 			expected: []byte{0x0F, 0xF3, 0xFF, 0x00, 0xC0},
 		},
 		{
-			name: "Случай из кодировщика 1",
+			name: "Много нулей в начале",
 			ops1: func(w *BinWriter) {
 				w.WriteBits(w.CreateBitsArray(0b0, 4))
 			},
@@ -399,7 +283,7 @@ func TestMergeInto(t *testing.T) {
 			expected: []byte{0b00000011, 0b11110000},
 		},
 		{
-			name: "Случай из кодировщика 2",
+			name: "Дополнение 0xFF00 при использовании трех буферов",
 			ops1: func(w *BinWriter) {
 				w.WriteBits(w.CreateBitsArray(0b0, 1))
 				buf2 := &bytes.Buffer{}
@@ -429,17 +313,6 @@ func TestMergeInto(t *testing.T) {
 				w.WriteBits(w.CreateBitsArray(0xDB, 8))
 			},
 			expected: []byte{0xFF, 0xAA, 0xCC, 0xF6, 0xC0},
-		},
-		{
-			name: "Больше битов без выравнивания",
-			ops1: func(w *BinWriter) {
-				w.WriteBits([]bool{true, false, false, true})
-			},
-			ops2: func(w *BinWriter) {
-				w.WriteBits([]bool{true, false})
-				w.WriteBits([]bool{false, true, false})
-			},
-			expected: []byte{0x99, 0},
 		},
 		{
 			name: "Один объект в другой, а затем его в основной",

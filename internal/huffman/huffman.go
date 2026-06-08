@@ -199,7 +199,7 @@ func (h *HuffTable) DecodeHuff(reader *binreader.BinReader) (uint16, error) {
 
 		code += uint16(temp)
 		codeLen++
-		if codeLen > 16 {
+		if codeLen > NumHuffCodesLen {
 			return 0, errors.New("Huffman bit-reading error: can't find a symbol")
 		}
 		for i := h.offset[codeLen-1]; i < h.offset[codeLen]; i++ {

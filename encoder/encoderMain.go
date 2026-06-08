@@ -11,7 +11,7 @@ import (
 	"jpeg/shared"
 )
 
-// Типы форматов прореживания
+// EncodeFormat - типы форматов прореживания.
 type EncodeFormat byte
 
 const (
@@ -21,7 +21,7 @@ const (
 	Both                           //4:2:0
 )
 
-// Типы форматов аппроксимации
+// ApproxFormat - типы форматов аппроксимации.
 type ApproxFormat byte
 
 const (
@@ -30,6 +30,7 @@ const (
 	TwoBits                     //Два бита аппроксимированы
 )
 
+// Encoder - объект кодировщика.
 type Encoder struct {
 	Subsampling EncodeFormat //Формат прореживания (по умолчанию 4:2:0)
 
@@ -82,7 +83,11 @@ type Encoder struct {
 	forSkip      byte   //Для продолжения сканирования со старого места
 }
 
-// Конструктор объекта кодирования
+// CreateEncoder создает объект кодировщика.
+// dst указатель объект записи файла.
+// data матрица с данными изображения.
+// quantTableY таблица квантования для яркости.
+// quantTableColor таблица квантования для цвета.
 func CreateEncoder(dst *bufio.Writer, data shared.Image, quantTableY, quantTableColor [][]byte) (*Encoder, error) {
 	var encoder Encoder
 	encoder.data = &data
@@ -98,7 +103,7 @@ func CreateEncoder(dst *bufio.Writer, data shared.Image, quantTableY, quantTable
 	encoder.Capprox = defaultCapprox
 
 	encoder.writer = binwriter.BinWriterInit(dst)
-	encoder.prev = make([]int16, shared.NumOfChannels)
+	encoder.prev = make([]int16, shared.MaxComps)
 	return &encoder, nil
 }
 
@@ -162,9 +167,9 @@ func (jpeg *Encoder) writeFrameHeader(isProgressive bool) error {
 	sw.WriteByte(samplePrecision)
 	sw.WriteWord(jpeg.realImgHeight)
 	sw.WriteWord(jpeg.realImgWidth)
-	sw.WriteByte(shared.NumOfChannels)
+	sw.WriteByte(shared.MaxComps)
 
-	for i := range byte(shared.NumOfChannels) {
+	for i := range byte(shared.MaxComps) {
 		sw.WriteByte(i + 1)
 		if i == 0 {
 			sw.Write4Bit(jpeg.yh, jpeg.yv)
@@ -277,8 +282,8 @@ func (jpeg *Encoder) writeBaselineScanHeader(blocks [][]mcu.CodingBlock) error {
 		return se.err
 	}
 
-	compArray := make([]component, shared.NumOfChannels)
-	for i := range byte(shared.NumOfChannels) {
+	compArray := make([]component, shared.MaxComps)
+	for i := range byte(shared.MaxComps) {
 		curSelector := i + 1
 		compArray[i] = component{selector: curSelector, dcTable: tableIds[curSelector], acTable: tableIds[curSelector]}
 	}
@@ -309,7 +314,7 @@ func (jpeg *Encoder) createProgressiveScanDescript(head *scanHeader) string {
 		refine = fmt.Sprintf("refine (ah: %d)", head.ah)
 	}
 
-	if len(head.comps) == shared.NumOfChannels { //DC
+	if len(head.comps) == shared.MaxComps { //DC
 		return fmt.Sprintf("DC %s scan", refine)
 	} else { //AC
 		var str = map[mcu.Channel]string{
@@ -332,7 +337,7 @@ func (jpeg *Encoder) writeProgressiveScan(blocks [][]mcu.CodingBlock, head *scan
 
 	se := stickyEncoder{encoder: jpeg}
 
-	if len(head.comps) == shared.NumOfChannels { //DC скан
+	if len(head.comps) == shared.MaxComps { //DC скан
 		jpeg.yDCHuff = se.writeHuffTable(0, 0, yDCBits[:], yDCSymbols[:])
 		jpeg.cDCHuff = se.writeHuffTable(0, 1, cDCBits[:], cDCSymbols[:])
 		se.writeSos(head)
@@ -380,7 +385,7 @@ func (jpeg *Encoder) writeRefinementScan(blocks [][]mcu.CodingBlock, head *scanH
 
 	se := &stickyEncoder{encoder: jpeg}
 
-	if len(head.comps) == shared.NumOfChannels { //DC скан
+	if len(head.comps) == shared.MaxComps { //DC скан
 		if err := jpeg.writeSos(head); err != nil {
 			return false, fmt.Errorf("Can't write header in %s\n%s", jpeg.createProgressiveScanDescript(head), se.err.Error())
 		}
@@ -435,9 +440,18 @@ func (jpeg *Encoder) prepare() [][]mcu.CodingBlock {
 	jpeg.factorUpdate()
 	img := jpeg.convertToYCbCr()
 	blocks := jpeg.blockSubsample(img)
+	temp := func(elm *byte) {
+		*elm = *elm * mcu.DCTQuantCoeff
+	}
+	tempY := shared.CreateMatrix[byte](mcu.UnitRowCount, mcu.UnitColCount)
+	shared.CopyToMatrix(jpeg.quantTableY, &tempY)
+	tempC := shared.CreateMatrix[byte](mcu.UnitRowCount, mcu.UnitColCount)
+	shared.CopyToMatrix(jpeg.quantTableColor, &tempC)
+	shared.MatrixMap(tempY, temp)
+	shared.MatrixMap(tempC, temp)
 	shared.MatrixMap(blocks, func(elm *mcu.BlockRaw) {
 		elm.DCT()
-		elm.Quantization(shared.MultMatrixOnNumber(jpeg.quantTableY, mcu.DCTQuantCoeff), shared.MultMatrixOnNumber(jpeg.quantTableColor, mcu.DCTQuantCoeff))
+		elm.Quantization(tempY, tempC)
 	})
 	return jpeg.zigZag(blocks)
 }
@@ -446,8 +460,8 @@ func (jpeg *Encoder) prepare() [][]mcu.CodingBlock {
 func (jpeg *Encoder) commonScans(codingBlocks [][]mcu.CodingBlock) error {
 	//DC (все компоненты)
 	se := &stickyEncoder{encoder: jpeg}
-	compArray := make([]component, shared.NumOfChannels)
-	for i := range byte(shared.NumOfChannels) {
+	compArray := make([]component, shared.MaxComps)
+	for i := range byte(shared.MaxComps) {
 		curSelector := i + 1
 		compArray[i] = component{selector: curSelector, dcTable: tableIds[curSelector]}
 	}
@@ -538,8 +552,8 @@ func (jpeg *Encoder) approxScans(codingBlocks [][]mcu.CodingBlock) error {
 			if jpeg.curDCApp+1 <= byte(TwoBits) {
 				head.ah = jpeg.curDCApp + 1
 			}
-			compArray := make([]component, shared.NumOfChannels)
-			for i := range byte(shared.NumOfChannels) {
+			compArray := make([]component, shared.MaxComps)
+			for i := range byte(shared.MaxComps) {
 				curSelector := i + 1
 				compArray[i] = component{selector: curSelector, dcTable: 0}
 			}
@@ -629,7 +643,8 @@ func (jpeg *Encoder) curStatusScanIncrement() bool {
 	return jpeg.curStatus >= uint16(jpeg.targetStatus)
 }
 
-// По вызову функции выполняется Baseline кодирование
+// StartBaseline проводит кодирование Baseline изображения.
+// numOfRows задает количество строк, которые необходимо кодировать (0 - кодировать всё).
 func (jpeg *Encoder) StartBaseline(numOfRows uint16) (bool, error) {
 	if jpeg.RestartInterval > maxRst {
 		return false, fmt.Errorf("Invalid RestartInterval: %d", jpeg.RestartInterval)
@@ -709,7 +724,8 @@ func checkSpectralRange(slice []byte) bool {
 	return true
 }
 
-// По вызову функции выполняется Progressive кодирование
+// StartProgressive проводит кодирование Progressive изображения.
+// numOfScans задает количество сканов, которые необходимо кодировать (0 - кодировать всё).
 func (jpeg *Encoder) StartProgressive(numOfScans byte) (bool, error) {
 	if !checkSpectralRange(jpeg.Cspectral) {
 		return false, fmt.Errorf("Invalid Cspectral: %v", jpeg.Cspectral)

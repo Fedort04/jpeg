@@ -162,13 +162,15 @@ func (b *BinReader) GetBits(n byte) (uint16, error) {
 
 // Пропуск оставшихся бит в байте
 func (b *BinReader) BitsAlign() error {
-	if _, err := b.GetByte(); err != nil {
-		return errors.New("Can't align bits\n" + err.Error())
-	}
-	if b.end == BIG {
-		b.bitCount = 8
-	} else {
-		b.bitCount = 0
+	if b.bitCount > 0 && b.bitCount < 8 {
+		if _, err := b.GetByte(); err != nil {
+			return errors.New("Can't align bits\n" + err.Error())
+		}
+		if b.end == BIG {
+			b.bitCount = 8
+		} else {
+			b.bitCount = 0
+		}
 	}
 	return nil
 }

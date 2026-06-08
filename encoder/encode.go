@@ -193,7 +193,7 @@ func (jpeg *Encoder) restartIncrement() error {
 
 	var err error
 	if jpeg.RestartInterval != 0 && jpeg.mcuBlockCounter >= jpeg.RestartInterval {
-		jpeg.prev = make([]int16, shared.NumOfChannels)
+		jpeg.prev = make([]int16, shared.MaxComps)
 		jpeg.mcuBlockCounter = 0
 		err = jpeg.writeRestart()
 	}

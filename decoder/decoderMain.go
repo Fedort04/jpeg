@@ -25,6 +25,7 @@ type component struct {
 	used         bool //Флаг использования компоненты в текущем скане
 }
 
+// Decoder - объект декодировщика.
 type Decoder struct {
 	ImageHeight   uint16 //Высота изображения
 	ImageWidth    uint16 //Ширина изображения
@@ -54,6 +55,8 @@ type Decoder struct {
 	numBlocksWidth     uint16                                 //Количество блоков subsample по ширине
 	blockCount         uint                                   //Общее количество прочитанных блоков mcu
 	wasEOI             bool                                   //Флаг завершения чтения
+	bandSkips          uint16                                 //Счетчик пропусков вычислений в progressive
+	prev               []int16                                //Предыдущие значения DC для дельта кодирования
 	img                shared.Image                           //Результирующее изображение
 }
 
@@ -171,7 +174,7 @@ func (jpeg *Decoder) readScanHeader() error {
 	if sr.Err != nil {
 		return errors.New(readErrorMsg + "SOS\n" + sr.Err.Error())
 	}
-	if ns > shared.NumOfChannels {
+	if ns > shared.MaxComps {
 		return fmt.Errorf("%sheader param Num_Of_Channels %d", prefix, ns)
 	}
 
@@ -184,7 +187,7 @@ func (jpeg *Decoder) readScanHeader() error {
 			return errors.New(readErrorMsg + "SOS\n" + sr.Err.Error())
 		}
 
-		if cs > shared.NumOfChannels {
+		if cs > shared.MaxComps {
 			return fmt.Errorf("%scomponent param Channel_selector %d", prefix, cs)
 		}
 
@@ -244,7 +247,7 @@ func (jpeg *Decoder) readFrameHeader() error {
 		return errors.New(readErrorMsg + "SOF\n" + sr.Err.Error())
 	}
 
-	if jpeg.numOfComps > shared.NumOfChannels {
+	if jpeg.numOfComps > shared.MaxComps {
 		return fmt.Errorf("%snum of channels %d", prefix, jpeg.numOfComps)
 	}
 
@@ -356,17 +359,22 @@ func (jpeg *Decoder) readFileHeader() error {
 	return nil
 }
 
-// Чтение изображения на кол-во строк numOfRows
-// Возвращает true, если прочитано до конца
-func (jpeg *Decoder) ReadBaseJPEG(result shared.Image, numOfRows uint16) (bool, error) {
+// SetBuffer устанавливает буфер, в который записывается результат декодирования.
+func (jpeg *Decoder) SetBuffer(res shared.Image) error {
+	if len(res) != int(jpeg.ImageHeight) || len(res[0]) != int(jpeg.ImageWidth) {
+		return errors.New("Invalid buffer size")
+	}
+	jpeg.img = res
+	return nil
+}
+
+// ReadBaseJPEG проводит декодирование Baseline изображения.
+// numOfRows задает количество строк, которые необходимо декодировать (0 - декодировать всё).
+// При применении к Progressive изображению возвращает ошибку.
+func (jpeg *Decoder) ReadBaseJPEG(numOfRows uint16) (bool, error) {
 	if jpeg.CurStatus == 0 {
 		jpeg.constInit()
 	}
-
-	if len(result) != int(jpeg.ImageHeight) || len(result[0]) != int(jpeg.ImageWidth) {
-		return false, errors.New("Buffer size error")
-	}
-	jpeg.img = result
 
 	if err := jpeg.readScans(numOfRows); err != nil {
 		return jpeg.wasEOI, err
@@ -374,17 +382,13 @@ func (jpeg *Decoder) ReadBaseJPEG(result shared.Image, numOfRows uint16) (bool, 
 	return jpeg.wasEOI, nil
 }
 
-// Чтение изображения на кол-во сканов numOfScans
-// Возвращает true, если прочитано до конца
-func (jpeg *Decoder) ReadProgJPEG(result shared.Image, numOfScans uint16) (bool, error) {
+// ReadProgJPEG проводит декодирование Progressive изображения.
+// numOfScans задает количество сканов, которые необходимо декодировать (0 - декодировать всё).
+// При применении к Baseline изображению возвращает ошибку.
+func (jpeg *Decoder) ReadProgJPEG(numOfScans uint16) (bool, error) {
 	if jpeg.CurStatus == 0 {
 		jpeg.constInit()
 	}
-
-	if len(result) != int(jpeg.ImageHeight) || len(result[0]) != int(jpeg.ImageWidth) {
-		return false, errors.New("Buffer size error")
-	}
-	jpeg.img = result
 
 	if err := jpeg.readScans(numOfScans); err != nil {
 		return jpeg.wasEOI, err
@@ -392,7 +396,8 @@ func (jpeg *Decoder) ReadProgJPEG(result shared.Image, numOfScans uint16) (bool,
 	return jpeg.wasEOI, nil
 }
 
-// Чтение JPEG файла по пути source
+// ReadJPEG создает объекта декодировщика.
+// source задает источник чтения файла изображения.
 func ReadJPEG(source *bufio.Reader) (*Decoder, error) {
 	var res Decoder
 	res.reader = binreader.BinReaderInit(source)

@@ -9,9 +9,6 @@ import (
 	"jpeg/shared"
 )
 
-var bandSkips uint16 //Счетчик пропусков вычислений в progressive
-var prev []int16     //Предыдущие значения DC для дельта кодирования
-
 // Переменные для AC refinement
 var positiveBit int16
 var negativeBit int16
@@ -32,8 +29,8 @@ func (jpeg *Decoder) constInit() {
 
 // Инициализация дельта-декодирования, перезапуск bands, инициализация побитового чтения
 func (jpeg *Decoder) decodeInit() {
-	prev = make([]int16, jpeg.numOfComps)
-	bandSkips = 0
+	jpeg.prev = make([]int16, jpeg.numOfComps)
+	jpeg.bandSkips = 0
 	positiveBit = int16(1 << jpeg.saLow)
 	temp := -1
 	negativeBit = int16(uint(temp) << uint(jpeg.saLow))
@@ -42,8 +39,8 @@ func (jpeg *Decoder) decodeInit() {
 
 // Сброс дельта-кодирования
 func (jpeg *Decoder) restart() {
-	prev = make([]int16, jpeg.numOfComps)
-	bandSkips = 0
+	jpeg.prev = make([]int16, jpeg.numOfComps)
+	jpeg.bandSkips = 0
 }
 
 // Декодирование символа EOB
@@ -80,15 +77,15 @@ func (jpeg *Decoder) decodeDC(id int, huff *huffman.HuffTable) (int16, error) {
 	}
 
 	diff := decodeSign(int16(bits), byte(temp))
-	res := diff + prev[id]
-	prev[id] = res
+	res := diff + jpeg.prev[id]
+	jpeg.prev[id] = res
 	return res, nil
 }
 
 // Декодирование AC элемента
 func (jpeg *Decoder) decodeAC(unit []int16, huff *huffman.HuffTable) error {
-	if bandSkips > 0 {
-		bandSkips--
+	if jpeg.bandSkips > 0 {
+		jpeg.bandSkips--
 		return nil
 	}
 
@@ -117,12 +114,12 @@ func (jpeg *Decoder) decodeAC(unit []int16, huff *huffman.HuffTable) error {
 
 		if small == 0 {
 			if big != 15 {
-				bandSkips, err = decodeEndOfBand(jpeg.reader, big)
+				jpeg.bandSkips, err = decodeEndOfBand(jpeg.reader, big)
 				if err != nil {
 					return errors.New("End Of Band recovery failed")
 				}
 
-				bandSkips--
+				jpeg.bandSkips--
 				return nil
 			} else {
 				k += 15
@@ -254,7 +251,7 @@ func (jpeg *Decoder) decodeBaselineScan(increment uint16) (uint16, error) {
 
 // Пропуск нулей при refinement
 // Возвращает индекс следующего за промежутком нуля или endIndex
-func (jpeg *Decoder) RefinementZeroSkip(data []int16, zeros, startIndex, endIndex byte) (byte, error) {
+func (jpeg *Decoder) refinementZeroSkip(data []int16, zeros, startIndex, endIndex byte) (byte, error) {
 	for k := startIndex; k <= endIndex; k++ {
 		if data[k] == 0 {
 			if zeros == 0 {
@@ -373,11 +370,11 @@ func (jpeg *Decoder) decodeProgressiveAC() error {
 						arr = jpeg.blocks[row][col].Cr
 					}
 
-					if bandSkips > 0 {
-						if _, err := jpeg.RefinementZeroSkip(arr, mcu.UnitRowCount*mcu.UnitColCount, jpeg.startSpectral, jpeg.endSpectral); err != nil {
+					if jpeg.bandSkips > 0 {
+						if _, err := jpeg.refinementZeroSkip(arr, mcu.UnitRowCount*mcu.UnitColCount, jpeg.startSpectral, jpeg.endSpectral); err != nil {
 							return fmt.Errorf("AC decode error: %s in MCU block(%d, %d)", err.Error(), row, col)
 						}
-						bandSkips--
+						jpeg.bandSkips--
 						continue
 					}
 
@@ -395,18 +392,18 @@ func (jpeg *Decoder) decodeProgressiveAC() error {
 						switch low {
 						case 0:
 							if high != 15 {
-								bandSkips, err = decodeEndOfBand(jpeg.reader, high)
+								jpeg.bandSkips, err = decodeEndOfBand(jpeg.reader, high)
 								if err != nil {
 									return fmt.Errorf("AC decode error: End Of Band recovery failed in MCU block(%d; %d)", row, col)
 								}
 
-								k, err = jpeg.RefinementZeroSkip(arr, mcu.UnitRowCount*mcu.UnitColCount, k, jpeg.endSpectral)
+								k, err = jpeg.refinementZeroSkip(arr, mcu.UnitRowCount*mcu.UnitColCount, k, jpeg.endSpectral)
 								if err != nil {
 									return fmt.Errorf("AC decode error: %s in MCU block(%d, %d)", err.Error(), row, col)
 								}
-								bandSkips--
+								jpeg.bandSkips--
 							} else {
-								k, err = jpeg.RefinementZeroSkip(arr, high, k, jpeg.endSpectral)
+								k, err = jpeg.refinementZeroSkip(arr, high, k, jpeg.endSpectral)
 								if err != nil {
 									return fmt.Errorf("AC decode error: %s in MCU block(%d, %d)", err.Error(), row, col)
 								}
@@ -422,7 +419,7 @@ func (jpeg *Decoder) decodeProgressiveAC() error {
 							} else {
 								coeff = negativeBit
 							}
-							k, err = jpeg.RefinementZeroSkip(arr, high, k, jpeg.endSpectral)
+							k, err = jpeg.refinementZeroSkip(arr, high, k, jpeg.endSpectral)
 							if err != nil {
 								return fmt.Errorf("AC decode error: %s in MCU block(%d, %d)", err.Error(), row, col)
 							}

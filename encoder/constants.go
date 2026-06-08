@@ -95,7 +95,6 @@ func (sh *scanHeader) setComps(data []component) {
 const baselineSOSLength = 12
 const baselineColors = 3
 const dcSpectral = 0 //Значение DC скана в Spec selection
-const compByteLen = 2
 
 // =========== Константы для сегмента DHT ===========
 // Таблицы квантования из спецификации

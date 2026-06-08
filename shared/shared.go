@@ -2,6 +2,7 @@ package shared
 
 import (
 	"math"
+	"math/bits"
 )
 
 type Number interface {
@@ -99,13 +100,8 @@ func FindCategory(val int16) byte {
 	if val == 0 {
 		return 0
 	}
-
-	abs := int16(math.Abs(float64(val)))
-	n := byte(0)
-	for (1 << n) <= abs {
-		n++
-	}
-	return n
+	abs := uint16(math.Abs(float64(val)))
+	return byte(bits.Len16(abs))
 }
 
 // Асболютное значение
@@ -148,22 +144,11 @@ func CopyToMatrix[T any](src [][]T, dst *[][]T) {
 	*dst = newMatrix
 }
 
-// Умножение каждого элемента матрицы на число
-func MultMatrixOnNumber[T Number](matrix [][]T, number T) [][]T {
-	res := CreateMatrix[T](len(matrix), len(matrix[0]))
-	for i, row := range matrix {
-		for j := range row {
-			res[i][j] = matrix[i][j] * number
-		}
-	}
-	return res
-}
-
 // map функция для матрицы. Применяет f() к каждому элементу матрицы в порядке слева-направо сверху-вниз
 func MatrixMap[T any](matrix [][]T, f func(elm *T)) {
-	for _, row := range matrix {
-		for _, elm := range row {
-			f(&elm)
+	for i, row := range matrix {
+		for j := range row {
+			f(&matrix[i][j])
 		}
 	}
 }
@@ -178,9 +163,9 @@ func MergeInto[T Number](left, right map[T]int) {
 // map функция для матрицы. Применяет f() к каждому элементу матрицы в порядке слева-направо сверху-вниз
 // Вариант, который обрабатывает возникающие ошибки
 func MatrixMapError[T any](matrix [][]T, f func(elm *T) error) error {
-	for _, row := range matrix {
-		for _, elm := range row {
-			if err := f(&elm); err != nil {
+	for i, row := range matrix {
+		for j := range row {
+			if err := f(&matrix[i][j]); err != nil {
 				return err
 			}
 		}
@@ -197,26 +182,13 @@ func MatrixMapRows[T any](matrix [][]T, startRow, numOfRows uint16, f func(elm *
 		}
 
 		row := matrix[i]
-		for _, elm := range row {
-			if err := f(&elm); err != nil {
+		for j := range row {
+			if err := f(&matrix[i][j]); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
-}
-
-// Сравнение двух слайсов
-func CompareSlices[T Number](a, b []T) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // Маркеры всех используемых заголовков
@@ -240,7 +212,6 @@ const ZRL = 0xF0          //группа из 16 нулей
 const MaxZeros = 16       //Кол-во нулей для ZRL
 const NumOfRstMarkers = 8 //Количество RST маркеров
 const NumOfTables = 4     //Максимальное количество таблиц
-const NumOfChannels = 3   //Максимальное количество цветовых компонент
 const MaxComps = 3        //Максимальное количество компонент
 const SizeOfTable = 64    //Количество элементов в одной таблице квантования
 const BaselineSS = 0
